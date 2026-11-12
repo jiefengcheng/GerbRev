@@ -1,0 +1,6 @@
+{
+  "schema": "source-bound-t05-joint-profiles/1",
+  "radius_fraction": 0.25,
+  "sources": {},
+  "maximum_export_regions_per_attachment": 8
+}

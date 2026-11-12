@@ -1,0 +1,8 @@
+G04 Deliberately truncated input without its M02 marker*
+%FSTAX35Y35*%
+%MOMM*%
+%ADD10C,0.200000*%
+%IPPOS*%
+%LPD*%
+D10*
+X00200000Y00000000D03*

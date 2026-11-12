@@ -1,0 +1,19 @@
+{
+  "contracts/clearance/production.json": "cab61452f4f1f99c99d2e1959b9de50c84569944728a4685d101810b78d67ac1",
+  "contracts/clearance/settings.json": "31e1f2d21d911ca7a7f80f28432a39c5112663e718e253d1cf3bc11eea612b7e",
+  "contracts/component_remedy/settings.json": "d296f436a16f93469e4ac5ed0a179eb1fed0fa85f03ffa7ab16c7b3060bab140",
+  "contracts/gerber_u05/runtime.json": "9a4a8ee9ba429e73cbbf4802b66c5cb4c8f09476d7cb2cec24bf3b813f3c5edd",
+  "contracts/growth_void/settings.json": "6fdf639aecacad85ff1f3801d7bae6f7743be965ec0a206ac6750faf205118e8",
+  "contracts/hole_acceptance/settings.json": "bcff0e3e0db43ecfde439e9bdc03ec40ff482afe20ab66471da6038eee35aedd",
+  "contracts/pin_separation/settings.json": "1f59700136e5926462d216da3b09f7236cdee6b9eb2e8bf05146e0fcf8366844",
+  "contracts/runtime_preparation/kernel_binding.json": "b6088181a24cc8335a1e5b3597b059c8b0059f7c157c10cd4dc170b1451a235a",
+  "contracts/t01_bga_single/settings.json": "7355d5573fc6519a83510ae9cf7aa27b71e917c0aae6fae3e067fbdee0e15d78",
+  "contracts/t01_canonical/contract.json": "e7a1e26bfae11926a006eb15a508ea8ac725e9af411dc4b12eabf62118cb8545",
+  "contracts/t01_circle_exposure/settings.json": "94d1845bc080638ba7f01950dd1f4c3d0e48d028766b154dcd92b0cea119fa6d",
+  "contracts/t01_crop/source_features.json": "a7b387b97bfd817c73836f9f61c6bf0a06e4c4591b59c6605efc8d8d1f4da440",
+  "contracts/t02_rectangle_exposure/settings.json": "67a0957f163cb144f2f2e4c301f9237c10634945513fac490fe42849a95edc46",
+  "contracts/t02_shared_gaps/settings.json": "46f9513344180f1b21116387b136c340cd13f852ed31ac8ba9b78f633b238304",
+  "contracts/t04/pass_schedule.json": "212fefa78699d261eb315e094c7c6cbcdfb2e4c94c880bb2d3083fc57f43cbc6",
+  "contracts/t04/settings.json": "ea938b634215191577b2a18da90ceca63be31ba50cfd49d75425e38da807b384",
+  "contracts/t05_joint/settings.json": "ea8ffb64c39ad7170e37ba14f3c058f01d2e7300b02799f7f469732bd7b85efd"
+}

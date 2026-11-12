@@ -1,0 +1,6 @@
+{
+  "schema": "pcb-t04-pass-schedule/1",
+  "status": "PROVISIONAL",
+  "pass_increments": [1, 1, 1, 1, 2, 2, 2],
+  "scope": "Retain four completed passes, then at most three further passes. Advance each route by two original ladder rungs per further proposal. Both growth caps and every scene check remain mandatory."
+}

@@ -1,0 +1,25 @@
+{
+  "schema": "pcb-runtime-kernel-binding/1",
+  "authorization": "Owner-approved B/C/D integration; policy and coverage unchanged",
+  "kernels": {
+    "src/crop_balanced_t01.py": {
+      "original_sha256": "21c37617615ce71cff9c881a3b6941a348687b2c8ced806fab73c919b24a61c4",
+      "prepared_sha256": "75bdad9c3c0e5b85472e07871452e320216eb2dfaa15e68bf6a2ee923b50b7aa",
+      "authorization": "Owner-approved local T01 diagnostic selection and progress telemetry; evidence and policy preserved"
+    },
+    "src/native_inventory.py": {
+      "original_sha256": "b7f0dc9dfe369127a9b9a22d6d1d4c55f82a6a44ee805f3fcca7463e470330b2",
+      "prepared_sha256": "5f19045fa6716671aeae8cf3a0a13b75a5f81a4f58c9ef2679847c2c4702ee11"
+    },
+    "src/t01_canonical_surface.py": {
+      "original_sha256": "8d53f5eb1fb7aa38bcdbab1e3db3aeffc7c44047cc7cef07ac1681a60251388f",
+      "prepared_sha256": "3c1b28e5315bf960a49b6aee075a106f1362733a243f33604668ad38d6e0d2c2",
+      "authorization": "Owner-approved isolated T01 clearance-buffer and mask reuse, with geometry and policy preserved"
+    },
+    "src/crop_diameter_selection.py": {
+      "original_sha256": "2f4eeb3c6552edfd764bc91da2d1833f50c67364aa12a2ae3f3a3eea94fc6e20",
+      "prepared_sha256": "95426a7e3e7e1fabe1c6c73ce222b93a07b22795d789470b35008ccbb911776d",
+      "authorization": "Owner-approved exact reuse of original-scene round-size proofs"
+    }
+  }
+}

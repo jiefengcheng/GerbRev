@@ -1,0 +1,132 @@
+"""U04 T02 search: unchanged finite predicates, full final materialization."""
+from src.clearance_policy import HARD_GAP_MM, CONSTRUCTION_GAP_MM, CONTACT_BUFFER_MM, LEGACY_CONSTRUCTION_MM, BARRIER_GAP_MM
+import hashlib
+from pathlib import Path
+from shapely import to_wkb,from_wkb,STRtree
+from shapely.geometry import box
+from shapely.affinity import scale
+from shapely.ops import unary_union
+from src.stage_abi.lands import LandAdapter,merge_groups,exposure_records,exposure_settings,exposure_eligible
+from src.stage_abi.runtime import Budget,output_scene,operands
+from src.stage_abi.scene import composed
+from src.stage_abi.store import digest,canonical
+from src.stage_abi.contracts import fail
+from src.stage_abi.journal import ACTIVE as EXECUTION_JOURNAL, journalled
+from src.joint_rectangle_growth import fit_joint_rectangle
+from src.crop_stage_growth import check_proposal,GrowthContract
+from src.stage_abi.preparation import prepared_tree as STRtree
+from src.stage_abi.preparation import prepared_buffer
+from src.shape_containment import ContainmentIndex,records as containment_records
+from src import t02_shared_gaps as shared_gaps
+
+class FastRectangleAdapter(LandAdapter):
+ def describe(self):
+  value=super().describe()
+  value['implementation']=digest(canonical(value)+Path(__file__).read_bytes())
+  return value
+ def plan(self,store,scene,policy,selection,bounds):
+  details=super().plan(store,scene,policy,selection,bounds)
+  _,_,original=operands(store,scene)
+  details['targets']=sorted(details['targets'],key=lambda s:(original[s].centroid.y,original[s].centroid.x,s))
+  return details
+ def _context(self,store,scene,policy,details):
+  key=(id(store),digest(canonical(dict(scene=scene,policy=policy,targets=sorted(details['targets'])))))
+  if getattr(self,'_prepared_key',None)==key:
+   # Re-read every content-addressed operand. Reuse only immutable source
+   # preparation inside this invocation; every candidate predicate still runs.
+   _,current,original=operands(store,scene)
+   if details.get('containment')!=containment_records(current,details['targets']):fail('CONTAINMENT_PLAN_CHANGED','Prepared context must revalidate containment')
+   if self.stage=='t02'and details.get('rectangle_exposure')!=exposure_records(scene,original,details['targets'],exposure_settings()):fail('RECTANGLE_EXPOSURE_PLAN_CHANGED','Prepared context must revalidate source perimeter')
+   if self.stage=='t02'and details.get('shared_neighbor_gaps')!=shared_gaps.records(scene,original,current):fail('SHARED_GAP_PLAN_CHANGED','Prepared context must revalidate complete neighbor faces')
+   return self._prepared_context
+  rows,current,original,checker,crop=super()._context(store,scene,policy,details)
+  # Port permission remains bound to original native source widths, even
+  # though the finite obstacle surface is the widened current predecessor.
+  for oid,row in rows.items():checker.widths[oid]=row['metadata'].get('original_width_mm',checker.widths[oid])
+  for sid in details['targets']:
+   for oid in checker.ids:
+    if oid==sid:continue
+    width=max(checker.widths[sid],checker.widths[oid])+checker.contract.original_port_buffer_gap_mm
+    contact=original[sid].intersects(original[oid]);overlap=original[sid].intersection(original[oid]) if contact else None
+    checker.ports[(sid,oid)]=(prepared_buffer(overlap,width,quad_segs=checker.contract.port_quad_segs) if contact else None,contact,original[sid].distance(original[oid]))
+  self._prepared_key=key;self._prepared_context=(rows,current,original,checker,crop)
+  return self._prepared_context
+ def _trial_check(self,checker,current,selected,ids):
+  # Only derived full-scene diagnostics are deferred. Every finite pair,
+  # visibility, attachment, growth and failure witness is still evaluated.
+  return journalled('land-simultaneous-check',{s:hashlib.sha256(to_wkb(selected[s])).hexdigest() for s in ids},lambda:checker.check([dict(id=s,original=current[s],candidate=selected[s],native_source_kind='gr_poly',native_stroke_width_mm=0.) for s in ids],materialize_scene=False))
+ @staticmethod
+ def covered(core,sid,current,ids,tree,aliases):
+  # Same stage-entry union/alias rule as the canonical and reference adapters.
+  return ContainmentIndex(current).assess(sid,aliases)['contained']
+ def run(self,store,scene,policy,plan,checkpoint):
+  details=plan['details'];rows,current,original,checker,crop=self._context(store,scene,policy,details);ids=details['targets'];selected={s:current[s] for s in ids};budget=Budget(details['bounds']);decisions=[];source_ids=list(current);tree=STRtree([current[s] for s in source_ids])
+  for ordinal,sid in enumerate(ids):
+   core=current[sid];covered=details['containment'][sid]['contained'];attempts=[]
+   # Both axis orders revisit identical candidates. The other lands are
+   # fixed during this search, so their complete trial proof remains valid.
+   trial_cache={};trial_cache_bytes=0
+   cache_trials=self.stage=='t02' and EXECUTION_JOURNAL.get() is None
+   def feasible(candidate):
+    nonlocal trial_cache_bytes
+    budget.evaluation()
+    candidate_sha=digest(to_wkb(candidate))
+    if candidate_sha in trial_cache:
+     scene_passed,failures=trial_cache[candidate_sha]
+    else:
+     trial=dict(selected,**{sid:candidate});q=self._trial_check(checker,current,trial,ids)
+     scene_passed,failures=q['passed'],q['failures']
+     if cache_trials:
+      size=len(canonical(failures))+256
+      if trial_cache_bytes+size<=1024**2:
+       trial_cache[candidate_sha]=(scene_passed,failures);trial_cache_bytes+=size
+    cap_ok=self.stage!='t02' or scale(original[sid],1.25,1.25,origin=original[sid].centroid).covers(candidate)
+    passed=scene_passed and candidate.covers(core) and cap_ok and candidate.difference(crop).area<=1e-12
+    attempts.append(dict(candidate_sha256=candidate_sha,passed=passed,failures=failures+([] if cap_ok else [dict(reason='ORIGINAL_RECTANGLE_CEILING_EXCEEDED')])))
+    return passed
+   candidate=core;shape={}
+   if not covered and self.stage=='t01':
+    p=details['parameters'][sid]
+    for d in p['diameters']:
+     trial=Point(*p['center_mm']).buffer(d/2,quad_segs=128)
+     if not trial.covers(core):continue
+     if feasible(trial):candidate=trial;shape=dict(diameter_mm=d);break
+   elif not covered and exposure_eligible(details,sid):
+    # The 0.25 factor interval is narrower than 0.000062 after 12
+    # refinements. Every accepted rectangle still passes the full predicate.
+    steps=12 if self.stage=='t02' else 36
+    candidate,factors=fit_joint_rectangle(core,feasible,max_factor=1.25,steps=steps);shape=dict(factors=list(factors))
+   if not feasible(candidate):fail('LAND_KEEP_OR_CANDIDATE_INVALID',sid)
+   held=self.stage=='t02'and not exposure_eligible(details,sid)
+   selected[sid]=candidate;blob=to_wkb(candidate);budget.output(blob);decisions.append(dict(source_id=sid,status='COVERED_SKIP' if covered else 'GROWN' if candidate.difference(core).area>1e-12 else 'KEEP',shape=shape,candidate_ref=rows[sid]['geometry_ref']if covered or held else store.put('geometry',blob),attempts=attempts,**({'keep_reason':'EXPOSED_PERIMETER_BELOW_LIMIT'}if held and not covered else{})));checkpoint(dict(next_ordinal=ordinal+1,evaluations=budget.evaluations,decisions=decisions))
+  shared=None
+  if self.stage=='t02':selected,shared=self._shared_project(store,details,rows,current,original,selected,decisions,budget)
+  final=self._check(checker,current,selected,ids)
+  if not final['passed']:fail('SIMULTANEOUS_LAND_CHECK_FAILED','final')
+  current_after=dict(current,**selected);merges=[];additions=[]
+  if self.stage=='t02':merges,additions=self._merges(store,scene,plan,rows,current_after,budget)
+  replacements={r['source_id']:r['candidate_ref'] for r in decisions};out_ref,out=output_scene(store,scene,plan,replacements=replacements,additions=additions,shared_gap_state_ref=store.put_json('shared-gap-state',shared)if shared is not None else None)
+  if shared is not None:shared_gaps.complete(shared,composed(store,out))
+  return dict(status='CONSTRUCTED',before_ref=store.put('geometry',to_wkb(composed(store,scene))),after_ref=store.put('geometry',to_wkb(composed(store,out))),output_scene_ref=out_ref,decisions=decisions,inclusive_candidates=merges,checks=final,evaluations=budget.evaluations,protected_source_refs={s:r['geometry_ref'] for s,r in rows.items() if s not in ids},**({'shared_neighbor_gaps':shared}if shared is not None else{}))
+ def _merges(self,store,scene,plan,rows,current,budget):
+  crop=box(*scene['viewport_mm']);ids=[s for s in plan['details']['targets']if not plan['details']['containment'][s]['contained']and exposure_eligible(plan['details'],s)];groups=merge_groups(ids,{s:from_wkb(store.get(rows[s]['original_ref'],kind='geometry')) for s in ids});before=unary_union([current[s] for s in sorted(current)]).intersection(crop);claimed=set();accepted=[];decisions=[];additions=[];source_ids=list(current);tree=STRtree([current[s] for s in source_ids])
+  for ordinal,(axis,members) in enumerate(groups):
+   budget.evaluation();rect=box(*unary_union([current[s] for s in members]).bounds);span=before.intersection(rect);shortage=rect.difference(span).area/rect.area;near=[source_ids[i] for i in sorted(map(int,tree.query(rect.buffer(HARD_GAP_MM+.001),predicate='intersects')))];supports=set(members)|{s for s in near if rows[s]['kind']=='trace' and current[s].intersection(span).area>0};support_union=unary_union([current[s] for s in supports]);covered={s for s in near if s not in supports and current[s].difference(support_union).is_empty};neighbors=[dict(source_id=s,original=current[s],geometry=current[s],trace_width_mm=rows[s]['metadata'].get('original_width_mm',rows[s]['metadata'].get('nominal_width_mm',0.))) for s in near if s not in supports|covered];q=journalled('inclusive-land-check',dict(axis=axis,members=list(members),span_sha256=hashlib.sha256(to_wkb(span)).hexdigest(),rectangle_sha256=hashlib.sha256(to_wkb(rect)).hexdigest()),lambda:check_proposal(span,rect,neighbors,crop=crop,cap=rect,contract=GrowthContract()));delta=rect.difference(before);reasons=[]
+   from src.growth_remedy_constraints import remedy as pin_remedy
+   pin_check=pin_remedy(rect,before)
+   shared_check=shared_gaps.fill_check(plan['details'],current,rect)
+   if shared_check is not None and not shared_check['passed']:reasons.append('SHARED_NEIGHBOR_GAP_ENTIRE_FILL')
+   if pin_check is not None and not pin_check['passed']:reasons.append('PROTECTED_PIN_SEPARATION_ENTIRE_FILL')
+   if shortage>.20:reasons.append('SHORTAGE_ABOVE_20_PERCENT')
+   if span.geom_type!='Polygon':reasons.append('SPAN_NOT_ONE_CONNECTED_SURFACE')
+   if claimed.intersection(members):reasons.append('SOURCE_ALREADY_MERGED')
+   if not q['passed']:reasons.append('FOREIGN_CLEARANCE_FAILED')
+   if delta.area<=1e-12:reasons.append('NO_VISIBLE_ADDITION')
+   if any(not old.difference(span).is_empty and delta.distance(old.difference(span))<CONSTRUCTION_GAP_MM for old in accepted):reasons.append('PRIOR_MERGE_CLEARANCE_FAILED')
+   record=dict(ordinal=ordinal,members=list(members),axis=axis,shortage=shortage,status='REJECTED' if reasons else 'MERGED',reasons=reasons,check=q)
+   if pin_check is not None:record['pin_separation']=pin_check
+   if shared_check is not None:record['shared_neighbor_gaps']=shared_check
+   if not reasons:
+    blob=to_wkb(rect);budget.output(blob);reference=store.put('geometry',blob);sid='t02-inclusive:'+reference['sha256'];additions.append(dict(source_id=sid,kind='inclusive_rectangle',original_ref=reference,geometry_ref=reference,metadata=dict(origin='t02-inclusive-fill',members=list(members))));record['candidate_ref']=reference;accepted.append(rect);before=before.union(rect);claimed.update(members)
+   decisions.append(record)
+  return decisions,additions

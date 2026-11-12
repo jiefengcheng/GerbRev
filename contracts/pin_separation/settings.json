@@ -1,0 +1,6 @@
+{
+  "schema": "source-pin-intent-registry/1",
+  "precedence": "LOCAL_SOURCE_PIN_SEPARATION_OVERRIDES_SAME_NET_COMPONENT_AND_REMEDY_ALLOWANCES",
+  "spacing": "REGISTERED_PRODUCTION_CLEARANCE_WITH_EXISTING_CONSTRUCTION_MARGIN",
+  "sources": {}
+}
