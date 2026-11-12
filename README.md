@@ -2,6 +2,10 @@
 
 Standalone CLI for the source-only Gerber U05 route. It processes one explicitly selected Gerber artwork file. Both passes construct and check T01 → T03 → T04 → T02 → T05. The first pass and its verified export produce the local reference. The second pass uses that reference and runs the connected-copper checks, export, paired actual-file reparse, corruption controls, and final material audit.
 
+## Workflow reference
+
+![Chinese workflow reference covering T01 through T07](docs/images/workflow-reference.jpg)
+
 ## Run
 
 The tested setup uses Python 3.14.5 on Apple Silicon macOS with the pinned wheels in `requirements.lock`. The geometry runtime checks Shapely and GEOS 3.13.1. Use a writable workspace with at least 5 GiB free.
