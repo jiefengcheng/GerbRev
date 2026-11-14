@@ -8,7 +8,7 @@ from shapely.ops import unary_union
 from src.stage_abi.store import canonical,digest
 from src.stage_abi.scene import validate_scene,composed
 from src.junction_spindle_stage import CONTRACT,prepare_spindle_context
-from src.junction_spindle_blend import spindle_blend,check_spindle
+from src.junction_spindle_blend import spindle_addition,check_spindle
 from .junctions import NativeSpindleAdapter
 from src import component_clearance as cc
 from src.stage_abi.loaded_geometry import GeometrySnapshot,GeometryMemo,SNAPSHOT_BYTES,MEMO_BYTES,MEMO_ENTRIES,SIGNATURE_ENTRIES,budget
@@ -130,8 +130,8 @@ class CoverageAdapter(NativeSpindleAdapter):
     def _difference(self,a,b):return a.difference(b) if self._geometry is None else self._geometry.difference(a,b)
     def _difference_empty(self,a,b):return a.difference(b).is_empty if self._geometry is None else self._geometry.difference_empty(a,b)
     def _buffer(self,g,r):return g.buffer(r,quad_segs=64) if self._geometry is None else self._geometry.buffer(g,r,quad_segs=64)
-    def _blend(self,owner,radius,domain):
-        candidate,addition=spindle_blend(owner,radius,domain,geometry=self._geometry)
+    def _blend_addition(self,owner,radius,domain):
+        addition=spindle_addition(owner,radius,domain,geometry=self._geometry)
         context=integral_context()
         if context is not None:
             from shapely.geometry import Polygon
@@ -141,8 +141,8 @@ class CoverageAdapter(NativeSpindleAdapter):
             source_void=original_voids()if self._geometry is None else self._geometry.construct('frozen-original-owner-voids',[source_core],(),original_voids)
             partial_voids=[v['remaining']for v in context.approved_partial_pockets.values()if v['spec'].get('original_channel_id',v['spec']['original_owner_id'])==own]
             if partial_voids:source_void=unary_union([source_void,*partial_voids])
-            addition=addition.difference(source_void);candidate=owner.union(addition)
-        return candidate,addition
+            addition=addition.difference(source_void)
+        return addition
     def owner_for_route(self,sid):return integral_context().owner(sid,self._hot[2][sid])
     def _foreign_for(self,owner,foreign):
         context=integral_context()
@@ -220,7 +220,12 @@ class CoverageAdapter(NativeSpindleAdapter):
         foreign=[(sid,current[sid]) for sid in self._spatial.query(query) if sid not in allowed and current[sid].intersects(query)]
         return owner,radius,domain,foreign
     def needs(self,current,row,radius,desired):
-        return [dict(a,window=self._buffer(current[a['land_id']],2*radius),needed=desired.intersection(self._buffer(current[a['land_id']],2*radius)).area>VISIBLE) for a in row['attachments']]
+        needs=[]
+        for attachment in row['attachments']:
+            window=self._buffer(current[attachment['land_id']],2*radius)
+            needed=desired.intersection(window).area>VISIBLE
+            needs.append(dict(attachment,window=window,needed=needed))
+        return needs
     def outcomes(self,needs,physical,reference):
         rows=[]
         for a in needs:
@@ -268,13 +273,16 @@ class CoverageAdapter(NativeSpindleAdapter):
                 next_report = time.monotonic() + 30
             d=dict(row,status='KEEP',attempts=[])
             if not row['land_ids']:d.update(reason='NO_DECLARED_SOURCE_CONTACT',attachment_outcomes=[]);record(d);continue
-            owner,radius,domain,foreign=self._operands(store,scene,policy,plan['details'],row);desired=self._blend(owner,radius,domain)[1].difference(before);needs=self.needs(current,row,radius,desired)
+            owner,radius,domain,foreign=self._operands(store,scene,policy,plan['details'],row)
+            nominal_addition=self._blend_addition(owner,radius,domain)
+            needs=self.needs(current,row,radius,nominal_addition.difference(before))
             if not any(a['needed'] for a in needs):d.update(reason='PREDECESSOR_ALREADY_SATISFIES',attachment_outcomes=self.outcomes(needs,Polygon(),row));record(d);continue
             all_foreign=self._foreign_for(owner,foreign+[(a['id'],a['addition']) for a in accepted]);barriers=unary_union([self._buffer(g,CONTRACT.barrier_gap_mm) for _,g in all_foreign if not self._difference_empty(g,owner)]);scope=self.scope(row)
             for scale in CONTRACT.radius_scales:
                 used+=1
                 if used>bounds['max_evaluations']:raise ValueError('U05_ATTACHMENT_EVALUATION_BUDGET')
-                raw=self._blend(owner,radius*scale,domain)[1].difference(barriers);physical=raw.difference(before);check=self._check(owner,owner.union(raw),raw,domain,all_foreign);outcomes=self.outcomes(needs,physical,row)
+                addition=nominal_addition if scale==1.0 else self._blend_addition(owner,radius*scale,domain)
+                raw=addition.difference(barriers);physical=raw.difference(before);check=self._check(owner,owner.union(raw),raw,domain,all_foreign);outcomes=self.outcomes(needs,physical,row)
                 failures=list(check['failures'])
                 if physical.difference(scope).area>EPS:failures.append('WRITE_BOUNDARY')
                 if any(a['status']=='MISSING_TREATMENT' for a in outcomes):failures.append('ATTACHMENT_NO_EFFECT')
@@ -294,7 +302,7 @@ class CoverageAdapter(NativeSpindleAdapter):
             q=self._check(a['owner'],a['owner'].union(a['addition']),a['addition'],a['window'],a['foreign']+[(b['id'],b['addition']) for b in accepted if b['id']!=a['id']])
             if not q['passed']:raise ValueError('U05_ATTACHMENT_SIMULTANEOUS_FAILURE:'+str(q['failures']))
             checks.append(dict(id=a['id'],check=q))
-        after=before.union(unary_union([a['addition'] for a in accepted]));output=dict(scene,objects=list(scene['objects']),lineage=scene['lineage']+[dict(stage='t05',predecessor_ref=plan['scene_ref'],policy_ref=plan['policy_ref'],implementation=plan['implementation'],plan_ref=store.put_json('plan',plan))],acceptance=dict(owner='PENDING_USER',independent='NOT_RUN',native_electrical_manufacturing='NOT_ESTABLISHED'))
+        output=dict(scene,objects=list(scene['objects']),lineage=scene['lineage']+[dict(stage='t05',predecessor_ref=plan['scene_ref'],policy_ref=plan['policy_ref'],implementation=plan['implementation'],plan_ref=store.put_json('plan',plan))],acceptance=dict(owner='PENDING_USER',independent='NOT_RUN',native_electrical_manufacturing='NOT_ESTABLISHED'))
         for d in decisions:
             if d['status']=='GROWN':output['objects'].append(dict(source_id=addition_source_id(d),kind='junction_addition',geometry_ref=d['patch_ref'],original_ref=d['patch_ref'],metadata=dict(origin='t05-derived-addition',owner_trace=d['source_id'],predecessor_ref=plan['scene_ref'])))
         after=self._snapshot.composed(store,output)
@@ -310,10 +318,15 @@ class CoverageAdapter(NativeSpindleAdapter):
             if not row['land_ids']:
                 if d['status']!='KEEP' or d['attachment_outcomes']:raise ValueError('U05_ATTACHMENT_NO_CONTACT_FORGED')
                 continue
-            owner,radius,domain,foreign=self._operands(store,scene,policy,plan['details'],row);desired=self._blend(owner,radius,domain)[1].difference(before);needs=self.needs(current,row,radius,desired)
+            owner,radius,domain,foreign=self._operands(store,scene,policy,plan['details'],row)
+            nominal_addition=self._blend_addition(owner,radius,domain)
+            needs=self.needs(current,row,radius,nominal_addition.difference(before))
             if d['status']=='GROWN':
                 if d['scale'] not in CONTRACT.radius_scales:raise ValueError('U05_ATTACHMENT_SCALE_CHANGED')
-                barriers=unary_union([self._buffer(g,CONTRACT.barrier_gap_mm) for _,g in self._foreign_for(owner,foreign+[(a['id'],a['addition']) for a in patches]) if not self._difference_empty(g,owner)]);expected=filled_patch(self._blend(owner,radius*d['scale'],domain)[1].difference(barriers),before)
+                barriers=unary_union([self._buffer(g,CONTRACT.barrier_gap_mm) for _,g in self._foreign_for(owner,foreign+[(a['id'],a['addition']) for a in patches]) if not self._difference_empty(g,owner)])
+                scale=d['scale']
+                addition=nominal_addition if scale==1.0 else self._blend_addition(owner,radius*scale,domain)
+                expected=filled_patch(addition.difference(barriers),before)
                 if store.get(d['patch_ref'],kind='geometry')!=to_wkb(expected):raise ValueError('U05_ATTACHMENT_DIRECT_PATCH_REPLAY_FAILED')
                 physical=expected.difference(before)
                 if physical.difference(self.scope(row)).area>EPS:raise ValueError('U05_ATTACHMENT_WRITE_BOUNDARY')
@@ -327,7 +340,6 @@ class CoverageAdapter(NativeSpindleAdapter):
         for a in patches:
             q=self._check(a['owner'],a['owner'].union(a['addition']),a['addition'],a['window'],a['foreign']+[(b['id'],b['addition']) for b in patches if b['id']!=a['id']])
             if not q['passed']:raise ValueError('U05_ATTACHMENT_FINAL_GEOMETRY_FAILED')
-        after=before.union(unary_union([a['addition'] for a in patches]))
         output=validate_scene(store,candidate['output_scene_ref']);expected_rows=list(scene['objects'])
         for d in candidate['decisions']:
             if d['status']=='GROWN':expected_rows.append(dict(source_id=addition_source_id(d),kind='junction_addition',geometry_ref=d['patch_ref'],original_ref=d['patch_ref'],metadata=dict(origin='t05-derived-addition',owner_trace=d['source_id'],predecessor_ref=plan['scene_ref'])))

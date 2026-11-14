@@ -4,7 +4,7 @@ This does not authorize filling inherited voids, widening beyond stage caps, or
 merging separate originals. It is not wired into the app or operator route.
 """
 import hashlib,math
-from shapely import STRtree,normalize,to_wkb
+from shapely import STRtree,get_precision,normalize,prepare,to_wkb
 from shapely.ops import unary_union
 
 def sha(g):return hashlib.sha256(to_wkb(normalize(g))).hexdigest()
@@ -25,11 +25,24 @@ class OriginalOwners:
   groups={}
   for i,g in enumerate(faces):groups.setdefault(root(i),[]).append(g)
   self.owners=sorted([unary_union(g)for g in groups.values()],key=sha)
+  prepare(self.owners)
+  self.full_precision=tuple(get_precision(g)==0 for g in self.owners)
   self.ids=[sha(g)for g in self.owners];self.tree=STRtree(self.owners)
   self.source_sha256=sha(source);self.source=source;self.fingerprint=hashlib.sha256((self.source_sha256+'\n'+'\n'.join(self.ids)).encode()).hexdigest()
  def membership(self,original_contribution):
   # Every positive source surface is retained, including sub-epsilon triangles.
-  return [self.ids[i]for i in sorted(map(int,self.tree.query(original_contribution)))if self.owners[i].intersection(original_contribution).area>0]
+  matches=[]
+  for i in sorted(map(int,self.tree.query(original_contribution))):
+   owner=self.owners[i]
+   # For valid positive-area copper, coverage proves positive overlap
+   # without constructing an intersection. Keep the exact overlay for
+   # partial coverage, edge contacts and fixed-precision overlay.
+   covered=(self.full_precision[i] and get_precision(original_contribution)==0
+            and original_contribution.geom_type in ('Polygon','MultiPolygon')
+            and owner.covers(original_contribution)
+            and original_contribution.is_valid and original_contribution.area>0)
+   if covered or owner.intersection(original_contribution).area>0:matches.append(self.ids[i])
+  return matches
  def clearance(self,after_by_owner,gap_mm=.04):
   if not math.isfinite(gap_mm)or gap_mm<=0:raise ValueError('POSITIVE_FINITE_CLEARANCE_REQUIRED')
   if set(after_by_owner)!=set(self.ids):raise ValueError('ORIGINAL_OWNER_INVENTORY_CHANGED')

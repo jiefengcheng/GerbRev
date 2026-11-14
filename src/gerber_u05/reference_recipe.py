@@ -62,7 +62,7 @@ def reconstruct_reference_material(current,shapes,records,parents,owners,*,grid_
  proof=dict(status='EXACT_PARSED_NATIVE_MATERIAL',parents=len(welded),serialized_regions=len(shapes),partitions=proofs,basis='Every actual parsed positive face is bound by exact integer boundary/area or exact native cut-in equality before parent assembly; source predecessor is unchanged')
  return after,image,material,owner_rows,proof
 
-def compute(run):
+def compute(run, mode):
  functional_state={}
  legacy=run.parent/'legacy';policy_snapshot=p.load(run/'POLICY_SNAPSHOT.json');contract=RemedyContract(**policy_snapshot['resolved_parameters'])
  def guard():
@@ -252,15 +252,29 @@ def compute(run):
   if functional_sidecar is not None:result['functional_channels']=functional_sidecar
   return result
 
- store=p.Store(run/'runtime');body,ledger,source,current,expected,native_parents,native_parent_owners=construct(store)
- return body,ledger,check(body,ledger,source,current,expected,native_parents,native_parent_owners,store)
+ store=p.Store(run/'runtime')
+ if mode=='construct':
+  body,ledger,source,current,expected,native_parents,native_parent_owners=construct(store)
+  model=dict(expected_ref=p.geomref(store,expected),parents=[
+   dict(identity=list(identity),geometry_ref=p.geomref(store,shape),owner=native_parent_owners[identity])
+   for identity,shape in native_parents])
+ else:
+  guard();source,current,_,_,_=context()
+  if 'scope' in functional_state:
+   scope=functional_state['scope']
+   functional_state['source_channels']=[scope.index.membership(g)[0] for g in parts(scope.channels.analytic_source)]
+   functional_state['current_channels']=[scope.index.membership(g)[0] for g in parts(joined(list(functional_state['owned'].values())))]
+  body,ledger,model=e.load_constructed(run,require_model=True)
+  expected=p.geometry(store,model['expected_ref'])
+  native_parents=[(tuple(row['identity']),p.geometry(store,row['geometry_ref'])) for row in model['parents']]
+  native_parent_owners={tuple(row['identity']):row['owner'] for row in model['parents']}
+ proof=check(body,ledger,source,current,expected,native_parents,native_parent_owners,store)
+ return body,ledger,proof,model
 
 def main():
- p.configure();run=Path(sys.argv[1]);mode=sys.argv[2];install_read_fence(run.parent);start=time.monotonic();body,ledger,proof=compute(run);folder=run/'export'
+ p.configure();run=Path(sys.argv[1]);mode=sys.argv[2];install_read_fence(run.parent);start=time.monotonic();body,ledger,proof,model=compute(run,mode);folder=run/'export'
  if mode=='construct':
-  folder.mkdir();(folder/'top.art.gbr').write_bytes(body);p.save(folder/'ledger.json',ledger)
- else:
-  if body!=(folder/'top.art.gbr').read_bytes()or p.canonical(ledger)!=p.canonical(p.load(folder/'ledger.json')):raise ValueError('FRESH_REFERENCE_RECONSTRUCTION_CHANGED')
+  e.save_constructed(run,body,ledger,model)
  p.save(folder/('proof_'+mode+'.json'),proof)
  print(json.dumps(dict(status='PASS',pid=os.getpid(),mode=mode,generated_sha256=p.digest(body),seconds=time.monotonic()-start)),flush=True)
 if __name__=='__main__':main()

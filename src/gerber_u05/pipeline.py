@@ -160,8 +160,10 @@ def build_source(store,raw):
     ref=store.put_json('scene',scene);binding=dict(source_ref=store.put('gerber-source',raw),scene_ref=ref,source_catalogue_ref=store.put_json('source-catalogue',catalogue(scene)),source_ledger=ledger,coordinate_oracle=oracle,max_arc_radius_residual_mm=residual,source_objects=len(parsed.objects),width_metadata_encoding_ref=store.put('kernel-width-data',b''.join(width_text)),width_metadata_rows=physical,KiCad='NOT_APPLICABLE_NO_SOURCE_CREATED',clear_operations=sum(not o.polarity_dark for o in parsed.objects))
     return binding
 
-def t01_sites(store,scene):
-    rows,current,_=operands(store,scene);ids=[r['source_id']for r in scene['objects']];shapes=[current[s]for s in ids];tree=STRtree(shapes);groups={};component=0
+def t01_sites(store,scene,*,current=None):
+    if current is None:
+        _,current,_=operands(store,scene)
+    ids=[r['source_id']for r in scene['objects']];positions={s:i for i,s in enumerate(ids)};shapes=[current[s]for s in ids];tree=STRtree(shapes);groups={};component=0
     for i in range(len(ids)):
         if i in groups:continue
         pending=[i];groups[i]=component
@@ -173,18 +175,23 @@ def t01_sites(store,scene):
     sites=[];seen=set()
     for i,r in enumerate(scene['objects']):
         if r['kind']!='circle'or r['source_id']in seen:continue
-        md=r['metadata'];aliases=md['alias_source_ids'];seen.update(aliases);indexes=[ids.index(s)for s in aliases];core=current[r['source_id']];center=[core.centroid.x,core.centroid.y];radius=(core.bounds[2]-core.bounds[0]+core.bounds[3]-core.bounds[1])/4
+        md=r['metadata'];aliases=md['alias_source_ids'];seen.update(aliases);indexes=[positions[s]for s in aliases];core=current[r['source_id']];center=[core.centroid.x,core.centroid.y];radius=(core.bounds[2]-core.bounds[0]+core.bounds[3]-core.bounds[1])/4
         from src import source_channel_scope
         contact_group='GERBER-PHYSICAL-'+str(groups[i])
         if source_channel_scope.ACTIVE is not None:contact_group='FUNCTIONAL-SOURCE-'+source_channel_scope.ACTIVE.owner(min(aliases),core)
         sites.append(dict(source_id=min(aliases),aliases=aliases,indexes=indexes,core=core,center=center,radius=radius,enlarged_radius=1.5*radius,geometry_sha256=digest(to_wkb(core)),physical_contact_group=contact_group))
     return sorted(sites,key=lambda s:(s['center'][1],s['center'][0],s['source_id']))
 
-def run_t01(store,scene,binding):
+def run_t01(store,scene,binding,*,prepared=None):
     from .t01_progress import reporter
     progress=reporter()
     if progress:progress('site_grouping')
-    sites=t01_sites(store,scene);_,current,_=operands(store,scene);rows=binding['width_metadata_rows'];shapes=[current[r['id']]for r in rows];raw=store.get(binding['width_metadata_encoding_ref'],kind='kernel-width-data');spec=specification();policy=dict(canonical_t01=marker(),family=marker()['family'],settings=spec['settings'],diameter_classes_mm=spec['diameter_classes_mm'])
+    if prepared is None:
+        _,current,_=operands(store,scene)
+        sites=t01_sites(store,scene,current=current)
+    else:
+        sites,current=prepared
+    rows=binding['width_metadata_rows'];shapes=[current[r['id']]for r in rows];raw=store.get(binding['width_metadata_encoding_ref'],kind='kernel-width-data');spec=specification();policy=dict(canonical_t01=marker(),family=marker()['family'],settings=spec['settings'],diameter_classes_mm=spec['diameter_classes_mm'])
     if progress:progress('allocation',round_sites=len(sites))
     settings,allocation,targets,square=allocate(raw,rows,shapes,sites,policy,dict(reviewed_pairs=[],recess_source_ids=[]),progress=progress)
     result=execute(raw,rows,shapes,sites,allocation['groups'],allocation['priorities_by_physical_component'],dynamic=True,settings=settings,counterfactuals=True,targets=targets,square_guided_ids=square,surface_guard=SurfaceGuard(rows,shapes,sites),progress=None if progress is None else lambda **fields:progress('construction',**fields))
@@ -192,7 +199,7 @@ def run_t01(store,scene,binding):
     after=dict(current)
     for s in sites:
         for sid in s['aliases']:after[sid]=result['scene'].accepted[s['source_id']]
-    lands=[dict(id=s['source_id'],original=s['core'],candidate=after[s['source_id']],native_source_kind='gr_circle',native_stroke_width_mm=0.)for s in sites];omit={a for s in sites for a in s['aliases']};fixed=[dict(id=s,geometry=g,trace_width_mm=next(r['trace_width_mm']for r in rows if r['id']==s))for s,g in current.items()if s not in omit]
+    lands=[dict(id=s['source_id'],original=s['core'],candidate=after[s['source_id']],native_source_kind='gr_circle',native_stroke_width_mm=0.)for s in sites];omit={a for s in sites for a in s['aliases']};width_by_id={r['id']:r['trace_width_mm'] for r in rows};fixed=[dict(id=s,geometry=g,trace_width_mm=width_by_id[s])for s,g in current.items()if s not in omit]
     checker=PreparedLandScene(lands,fixed)
     from src.t01_region_contacts import install_prepared_ports
     region_ports=install_prepared_ports(checker,rows)
@@ -217,8 +224,9 @@ def run_t03(store,scene,binding,t01):
     if any(not p['passed']or not p['original_contact_preserved']for r in records for p in r['pairs']):raise ValueError('GERBER_T03_MOVEMENT_NOT_QUALIFIED')
     return dict(output_scene_ref=store.put_json('scene',scene),records=records,summary=dict(trace_occurrences=len(records),pairs=sum(len(r['pairs'])for r in records),moved=0,disposition='NO_CHANGE_REQUIRED'))
 
-def width_admission(store,scene):
-    rows,current,original=operands(store,scene);native=[];families=collections.defaultdict(list)
+def width_admission(store,scene,*,loaded=None):
+    rows,current,original=operands(store,scene) if loaded is None else loaded
+    native=[];families=collections.defaultdict(list)
     from src import source_channel_scope
     frame_ids=source_channel_scope.ACTIVE.frame_ids if source_channel_scope.ACTIVE is not None else frozenset()
     for sid,r in rows.items():

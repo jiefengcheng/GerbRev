@@ -17,6 +17,7 @@ from src.u05_board.export import export_region,actual_spindle_check
 from .export_absorption import compact_supported_region as supported_region
 from .native_spindle_operand import operand as native_spindle_operand
 from .exporter import treated_attachment_outcome
+from .encoded_owner_projection import EncodedOwnerProjection
 from .native_assembly import assemble as assemble_native_material,weld as weld_native_material,canonical_parent
 from .contours import contours as serializable_contours
 from .compact_contours import contours as compact_t05_contours
@@ -195,10 +196,10 @@ def preserve_point_contacts(owner,pieces,sid,records,blocks,store,*,pregrid=None
     return caps
 
 
-def encoded_route_owner(encoded_current,members,land_ids,route_id):
+def encoded_route_owner(encoded_current,members,land_ids,route_id,projection):
     from src import source_channel_scope
     scope=source_channel_scope.ACTIVE
-    if scope is not None:return scope.project(encoded_current)[scope.owner(route_id)]
+    if scope is not None:return projection.owner_surface(scope.owner(route_id))
     return p.unary_union([encoded_current[s]for s in [*members,*land_ids]])
 
 def construct(run):
@@ -217,14 +218,65 @@ def construct(run):
         current=after
     value=p.load(run/'t05.json');prepared=store.get_json(value['plan']['scene_ref'],kind='scene');policy=store.get_json(value['plan']['policy_ref'],kind='policy');adapter=p.CoverageAdapter(p.box(*prepared['viewport_mm']))
     objects={row['source_id']:row for row in prepared['objects']}
-    for d in value['candidate']['decisions']:
-        if d['status']!='GROWN':continue
-        owner,radius,domain,foreign=adapter._operands(store,prepared,policy,value['plan']['details'],d)
-        region,normalization=t05_native_operand(p.geometry(store,d['patch_ref']),owner,domain)
-        pieces=append_regions(region,'t05',d['source_id'],records,blocks,store,owner=owner,normalization=normalization)
-        members=objects[d['source_id']]['metadata']['reference_source_ids'];encoded_owner=encoded_route_owner(encoded_current,members,d['land_ids'],d['source_id']);preserve_point_contacts(encoded_owner,pieces,d['source_id'],records,blocks,store,pregrid=(owner,region))
-    adapter.close();body=(base+'\n'+''.join(blocks)+'M02*\n').encode('ascii');store.verify_reads();verify_sources(run)
+    from src import source_channel_scope
+    scope=source_channel_scope.ACTIVE
+    projection=None
+    grown=[decision for decision in value['candidate']['decisions'] if decision['status']=='GROWN']
+    try:
+        if grown:
+            with adapter.execution(store,prepared,policy):
+                for d in grown:
+                    owner,radius,domain,foreign=adapter._operands(store,prepared,policy,value['plan']['details'],d)
+                    region,normalization=t05_native_operand(p.geometry(store,d['patch_ref']),owner,domain)
+                    pieces=append_regions(region,'t05',d['source_id'],records,blocks,store,owner=owner,normalization=normalization)
+                    if scope is not None and projection is None:
+                        projection=EncodedOwnerProjection(scope,encoded_current)
+                    members=objects[d['source_id']]['metadata']['reference_source_ids'];encoded_owner=encoded_route_owner(encoded_current,members,d['land_ids'],d['source_id'],projection);preserve_point_contacts(encoded_owner,pieces,d['source_id'],records,blocks,store,pregrid=(owner,region))
+    finally:
+        adapter.close()
+    body=(base+'\n'+''.join(blocks)+'M02*\n').encode('ascii');store.verify_reads();verify_sources(run)
     return body,dict(source_sha256=binding['source_ref']['sha256'],coordinate_oracle=oracle,records=records,generated_sha256=p.digest(body),producer_sha256=p.digest(Path(__file__).read_bytes()),profile='GERBER_SOURCE_ONLY; KiCad source/write/plot N/A; positive appended contours, original ordered clear operations retained')
+
+
+def save_constructed(run, body, ledger, model=None):
+    folder = run / 'export'
+    folder.mkdir()
+    (folder / 'top.art.gbr').write_bytes(body)
+    p.save(folder / 'ledger.json', ledger)
+    binding = dict(
+        generated_sha256=p.digest(body),
+        ledger_sha256=p.digest((folder / 'ledger.json').read_bytes()),
+        producer_binding_sha256=p.digest((run / 'PRODUCER_BINDING.json').read_bytes()),
+    )
+    if model is not None:
+        p.save(folder / 'native_model.json', model)
+        binding['native_model_sha256'] = p.digest((folder / 'native_model.json').read_bytes())
+    p.save(folder / 'construction_binding.json', binding)
+
+
+def load_constructed(run, *, require_model=False):
+    folder = run / 'export'
+    binding = p.load(folder / 'construction_binding.json')
+    if require_model and 'native_model_sha256' not in binding:
+        raise ValueError('CONSTRUCTED_NATIVE_MODEL_BINDING_MISSING')
+    body = (folder / 'top.art.gbr').read_bytes()
+    ledger_bytes = (folder / 'ledger.json').read_bytes()
+    if (p.digest(body) != binding['generated_sha256']
+            or p.digest(ledger_bytes) != binding['ledger_sha256']
+            or p.digest((run / 'PRODUCER_BINDING.json').read_bytes()) != binding['producer_binding_sha256']):
+        raise ValueError('LEGACY_CONSTRUCTED_EXPORT_BINDING_CHANGED')
+    model = None
+    if 'native_model_sha256' in binding:
+        model_bytes = (folder / 'native_model.json').read_bytes()
+        if p.digest(model_bytes) != binding['native_model_sha256']:
+            raise ValueError('CONSTRUCTED_NATIVE_MODEL_BINDING_CHANGED')
+        model = json.loads(model_bytes)
+    ledger = json.loads(ledger_bytes)
+    if ledger['generated_sha256'] != binding['generated_sha256']:
+        raise ValueError('LEGACY_CONSTRUCTED_LEDGER_HASH_CHANGED')
+    if (run / 'LEGACY_REFERENCE_JOB.json').exists():
+        p.initialize(p.Store(run / 'runtime'), p.load(run / 'source.json'))
+    return (body, ledger, model) if require_model else (body, ledger)
 
 def original_contact_port(overlap,width,contact):
     if not contact:return None,None
@@ -259,19 +311,26 @@ def native_model_reference(run,store,before,*,include_parents=False):
                 parts=prepare(shape,sid,stage);encoded_current[sid]=p.unary_union([*([encoded_current[sid]]if sid in encoded_current else[]),*parts])
         current=after
     prepared=store.get_json(value['plan']['scene_ref'],kind='scene');objects={r['source_id']:r for r in prepared['objects']};policy=store.get_json(value['plan']['policy_ref'],kind='policy');adapter=p.CoverageAdapter(p.box(*prepared['viewport_mm']))
+    from src import source_channel_scope
+    scope=source_channel_scope.ACTIVE
+    projection=None
+    grown=[decision for decision in value['candidate']['decisions'] if decision['status']=='GROWN']
     try:
-        for d in value['candidate']['decisions']:
-            if d['status']!='GROWN':continue
-            owner,radius,domain,foreign=adapter._operands(store,prepared,policy,value['plan']['details'],d)
-            region,normalization=t05_native_operand(p.geometry(store,d['patch_ref']),owner,domain)
-            parts=prepare(region,d['source_id'],'t05',owner,normalization)
-            # Reconstruct bounded encoding support from immutable models, not
-            # the generated ledger. The constructor and reference must account
-            # for the same legal one-grid material before global assembly.
-            members=objects[d['source_id']]['metadata']['reference_source_ids'];encoded_owner=encoded_route_owner(encoded_current,members,d['land_ids'],d['source_id']);support_rows=[]
-            preserve_point_contacts(encoded_owner,parts,d['source_id'],support_rows,[],store,pregrid=(owner,region))
-            for row in support_rows:
-                support=p.geometry(store,row['reference_ref']);sha=p.digest(p.to_wkb(support));references.append(support);parents.append((('t05',d['source_id'],sha),support));inventory.append(dict(stage='t05',source_id=d['source_id'],native_reference_sha256=sha,encoding_support=row['encoding_support']))
+        if grown:
+            with adapter.execution(store,prepared,policy):
+                for d in grown:
+                    owner,radius,domain,foreign=adapter._operands(store,prepared,policy,value['plan']['details'],d)
+                    region,normalization=t05_native_operand(p.geometry(store,d['patch_ref']),owner,domain)
+                    parts=prepare(region,d['source_id'],'t05',owner,normalization)
+                    # Reconstruct bounded encoding support from immutable models, not
+                    # the generated ledger. The constructor and reference must account
+                    # for the same legal one-grid material before global assembly.
+                    if scope is not None and projection is None:
+                        projection=EncodedOwnerProjection(scope,encoded_current)
+                    members=objects[d['source_id']]['metadata']['reference_source_ids'];encoded_owner=encoded_route_owner(encoded_current,members,d['land_ids'],d['source_id'],projection);support_rows=[]
+                    preserve_point_contacts(encoded_owner,parts,d['source_id'],support_rows,[],store,pregrid=(owner,region))
+                    for row in support_rows:
+                        support=p.geometry(store,row['reference_ref']);sha=p.digest(p.to_wkb(support));references.append(support);parents.append((('t05',d['source_id'],sha),support));inventory.append(dict(stage='t05',source_id=d['source_id'],native_reference_sha256=sha,encoding_support=row['encoding_support']))
     finally:adapter.close()
     expected=assemble_native_material(before,references,grid_mm=GRID_MM)
     if expected.is_empty or not expected.is_valid or expected.area<=0:raise ValueError('NATIVE_AGGREGATE_REFERENCE_INVALID')
@@ -283,7 +342,8 @@ def check(run,body,ledger):
     verify_sources(run);store=p.Store(run/'runtime');binding=p.load(run/'source.json');raw=store.get(binding['source_ref'],kind='gerber-source');original,_,_=p.source_profile.parse_source(raw);actual=parse(body);n=len(original.objects)
     expected_base,_=canonical_base(raw)
     if not body.startswith((expected_base+'\n').encode('ascii')):raise ValueError('ORIGINAL_CANONICAL_COMMAND_PREFIX_CHANGED')
-    if p.digest(body)!=ledger['generated_sha256']or len(actual.objects)!=n+len(ledger['records']):raise ValueError('GENERATED_GERBER_COUNT_OR_HASH_CHANGED')
+    body_sha256=p.digest(body)
+    if body_sha256!=ledger['generated_sha256']or len(actual.objects)!=n+len(ledger['records']):raise ValueError('GENERATED_GERBER_COUNT_OR_HASH_CHANGED')
     source_shapes=[];reference_source_shapes=[];proofs=[]
     for i,(a,b)in enumerate(zip(original.objects,actual.objects[:n])):
         ga,_=p.source_profile.object_geometry(a);gb,_=p.source_profile.object_geometry(b,arc_grid=p.source_profile.source_arc_grid(a))
@@ -312,7 +372,7 @@ def check(run,body,ledger):
         if any(g.is_empty or not g.is_valid for g in parts):raise ValueError('APPEND_ONLY_OPERAND_INVALID')
         result=core if not parts else p.unary_union([core,*parts])
         key=(p.digest(p.to_wkb(core)),p.digest(p.to_wkb(result)))
-        certificates[key]=dict(proof='EXACT_ORIGINAL_PREFIX_AND_PARSED_POSITIVE_APPEND_OPERANDS',generated_sha256=p.digest(body),core_sha256=key[0],candidate_sha256=key[1],positive_operand_sha256=[p.digest(p.to_wkb(g))for g in parts])
+        certificates[key]=dict(proof='EXACT_ORIGINAL_PREFIX_AND_PARSED_POSITIVE_APPEND_OPERANDS',generated_sha256=body_sha256,core_sha256=key[0],candidate_sha256=key[1],positive_operand_sha256=[p.digest(p.to_wkb(g))for g in parts])
         return result
     class ActualCoreProof:
         def check(self,rows,**kwargs):
@@ -353,13 +413,8 @@ def check(run,body,ledger):
                 if stage=='t02':
                     # Match source-bound T02 port permissions, not contacts
                     # introduced by earlier stages' larger predecessor copper.
-                    for land in lands:
-                        sid=land['id']
-                        for oid in checker.ids:
-                            if oid==sid:continue
-                            a,b=original_shapes[sid],original_shapes[oid];overlap=a.intersection(b);contact=not overlap.is_empty;w=max(checker.widths[sid],checker.widths[oid])+checker.contract.original_port_buffer_gap_mm
-                            port,port_proof=original_contact_port(overlap,w,contact);checker.ports[(sid,oid)]=(port,contact,a.distance(b))
-                            if port_proof is not None:native_port_proofs.append(dict(source_id=sid,neighbor_id=oid,**port_proof))
+                    from .native_land_contacts import source_contact_ports
+                    native_port_proofs=source_contact_ports(checker,lands,original_shapes,original_contact_port)
                 q=checker.check(lands,materialize_scene=True)
                 q['actual_file_required_gap_mm']=p.HARD_GAP_MM;q['original_source_native_port_proofs']=native_port_proofs
                 p.save(run/'export'/('actual_'+sys.argv[2]+'_'+stage+'.json'),q) if __name__=='__main__' else None
@@ -382,14 +437,18 @@ def check(run,body,ledger):
         return [(sid,g)for sid,g in pairs if tuple(selected.ids.get(sid,()))!=(owner,)]
     nominal_adapter=p.CoverageAdapter(p.box(*declared['viewport_mm']));declared_domains={}
     try:
-        for decision in value['candidate']['decisions']:
-            if decision['status']=='GROWN':declared_domains[decision['source_id']]=nominal_adapter._operands(store,declared,policy,value['plan']['details'],decision)[2]
+        with nominal_adapter.execution(store,declared,policy):
+            for decision in value['candidate']['decisions']:
+                if decision['status']=='GROWN':declared_domains[decision['source_id']]=nominal_adapter._operands(store,declared,policy,value['plan']['details'],decision)[2]
     finally:nominal_adapter.close()
     adapter=p.CoverageAdapter(p.box(*prepared['viewport_mm']));preimage=p.unary_union(list(current.values()));patches=[]
-    for d in value['candidate']['decisions']:
-        if d['status']!='GROWN':continue
-        owner,radius,domain,foreign=adapter._operands(store,prepared,policy,value['plan']['details'],d);declared_domain=declared_domains[d['source_id']];parts=by_stage['t05'][d['source_id']];addition=native_spindle_operand(parts);patches.append(dict(id=d['source_id'],owner=owner,regions=parts,addition=addition,net_addition=addition.difference(preimage),window=declared_domain.buffer(POLYGON_TOLERANCE_MM),foreign=foreign))
-    adapter.close();checks['t05']=[]
+    try:
+        with adapter.execution(store,prepared,policy):
+            for d in value['candidate']['decisions']:
+                if d['status']!='GROWN':continue
+                owner,radius,domain,foreign=adapter._operands(store,prepared,policy,value['plan']['details'],d);declared_domain=declared_domains[d['source_id']];parts=by_stage['t05'][d['source_id']];addition=native_spindle_operand(parts);patches.append(dict(id=d['source_id'],owner=owner,regions=parts,addition=addition,net_addition=addition.difference(preimage),window=declared_domain.buffer(POLYGON_TOLERANCE_MM),foreign=foreign))
+    finally:adapter.close()
+    checks['t05']=[]
     for patch in patches:
         q=actual_spindle_check(patch['owner'],patch['regions'],patch['addition'],patch['window'],original_foreign(patch['id'],patch['foreign']+[(other['id'],other['addition'])for other in patches if other['id']!=patch['id']]))
         q['additive_operand_basis']=dict(policy='ACTUAL_PARSED_POSITIVE_APPEND_REGIONS_INCLUDING_OWNER_ENCODING_SUPPORT',net_added_area_mm2=patch['net_addition'].area,positive_operand_area_mm2=patch['addition'].area,clearance_scope='Complete positive operand; conservative relative to net-only testing',delta_reassembly_tolerance_unchanged=True)
@@ -397,19 +456,24 @@ def check(run,body,ledger):
         if not q['passed']:raise ValueError('ACTUAL_GERBER_JUNCTION_CHECK_FAILED:'+patch['id']+':'+str(q['failures']))
         checks['t05'].append(dict(source_id=patch['id'],check=q))
     # Dynamic source-contact obligations; no C03 historical counts are imported.
+    from src.u05_board.attachment_export import PreparedAttachmentCopper
+    attachment_copper=PreparedAttachmentCopper(preimage)
     model=store.get_json(value['plan']['scene_ref'],kind='scene');adapter=p.CoverageAdapter(p.box(*model['viewport_mm']));_,model_current,_=p.operands(store,model);model_before=p.geometry(store,value['candidate']['before_ref']);attachments=[]
-    for d in value['candidate']['decisions']:
-        if not d['land_ids']:continue
-        owner,radius,domain,foreign=adapter._operands(store,model,policy,value['plan']['details'],d);desired=adapter._blend(owner,radius,domain)[1];needs=adapter.needs(model_current,d,radius,desired.difference(model_before));selected=p.geometry(store,d['patch_ref']).difference(model_before)if d['status']=='GROWN'else p.Polygon();parts=by_stage['t05'].get(d['source_id'],[])
-        if len(needs)!=len(d['attachment_outcomes']):raise ValueError('ACTUAL_ATTACHMENT_INVENTORY_CHANGED')
-        for need,outcome in zip(needs,d['attachment_outcomes']):
-            if any(outcome[k]!=need[k]for k in('id','land_id','reference_land_id','required_reference')):raise ValueError('ACTUAL_ATTACHMENT_MEMBERSHIP_CHANGED')
-            if outcome['status']=='TREATED_VERIFIED':actual=treated_attachment_outcome(selected.intersection(need['window']),desired.intersection(need['window']),preimage,parts)
-            elif outcome['status']=='ALREADY_SATISFIED_VERIFIED':actual=dict(status=outcome['status'],check=obligation_check(desired.intersection(need['window']),preimage,[],already=True))
-            elif outcome['status']=='BLOCKED_CLEARANCE_OR_BOUNDARY'and not outcome['required_reference']:actual=dict(status=outcome['status'],check=dict(passed=False,status='BLOCKED_NOT_COUNTED_AS_COVERED'))
-            else:raise ValueError('ACTUAL_ATTACHMENT_OUTCOME_NOT_QUALIFIED')
-            attachments.append(dict(id=outcome['id'],source_model_status=outcome['status'],**actual))
-    adapter.close();checks['attachment_obligations']=attachments
+    try:
+        with adapter.execution(store,model,policy):
+            for d in value['candidate']['decisions']:
+                if not d['land_ids']:continue
+                owner,radius,domain,foreign=adapter._operands(store,model,policy,value['plan']['details'],d);desired=adapter._blend_addition(owner,radius,domain);needs=adapter.needs(model_current,d,radius,desired.difference(model_before));selected=p.geometry(store,d['patch_ref']).difference(model_before)if d['status']=='GROWN'else p.Polygon();parts=by_stage['t05'].get(d['source_id'],[])
+                if len(needs)!=len(d['attachment_outcomes']):raise ValueError('ACTUAL_ATTACHMENT_INVENTORY_CHANGED')
+                for need,outcome in zip(needs,d['attachment_outcomes']):
+                    if any(outcome[k]!=need[k]for k in('id','land_id','reference_land_id','required_reference')):raise ValueError('ACTUAL_ATTACHMENT_MEMBERSHIP_CHANGED')
+                    if outcome['status']=='TREATED_VERIFIED':actual=treated_attachment_outcome(selected.intersection(need['window']),desired.intersection(need['window']),preimage,parts,prepared=attachment_copper)
+                    elif outcome['status']=='ALREADY_SATISFIED_VERIFIED':actual=dict(status=outcome['status'],check=obligation_check(desired.intersection(need['window']),preimage,[],already=True,prepared=attachment_copper))
+                    elif outcome['status']=='BLOCKED_CLEARANCE_OR_BOUNDARY'and not outcome['required_reference']:actual=dict(status=outcome['status'],check=dict(passed=False,status='BLOCKED_NOT_COUNTED_AS_COVERED'))
+                    else:raise ValueError('ACTUAL_ATTACHMENT_OUTCOME_NOT_QUALIFIED')
+                    attachments.append(dict(id=outcome['id'],source_model_status=outcome['status'],**actual))
+    finally:adapter.close()
+    checks['attachment_obligations']=attachments
     after=before.union(p.unary_union(observed));actual_grid=assemble_native_material(before,observed,grid_mm=GRID_MM);distance,metric=image_hausdorff(actual_grid,expected,tolerance=POLYGON_TOLERANCE_MM);area=actual_grid.symmetric_difference(expected).area;bound=2*expected.length*POLYGON_TOLERANCE_MM
     raw_decision_image=p.from_wkb(store.get(value['candidate']['after_ref'],kind='geometry'));raw_area=after.symmetric_difference(raw_decision_image).area;raw_area_bound=2*raw_decision_image.length*POLYGON_TOLERANCE_MM
     if not raw_decision_image.is_valid or raw_area>raw_area_bound:raise ValueError('RAW_MODEL_IMAGE_AREA_FIDELITY_FAILED')
@@ -440,8 +504,7 @@ def check(run,body,ledger):
 if __name__=='__main__':
     p.configure();run=Path(sys.argv[1]);mode=sys.argv[2]
     if mode=='construct':
-        body,ledger=construct(run);folder=run/'export';folder.mkdir();(folder/'top.art.gbr').write_bytes(body);p.save(folder/'ledger.json',ledger)
+        body,ledger=construct(run);save_constructed(run,body,ledger)
     else:
-        folder=run/'export';body=(folder/'top.art.gbr').read_bytes();ledger=p.load(folder/'ledger.json');expected_body,expected_ledger=construct(run)
-        if body!=expected_body or p.canonical(ledger)!=p.canonical(expected_ledger):raise ValueError('FRESH_EXPORT_RECONSTRUCTION_CHANGED')
+        folder=run/'export';body,ledger=load_constructed(run)
         proof=check(run,body,ledger);p.save(folder/('proof_'+mode+'.json'),proof);print(json.dumps(dict(status='PASS',pid=os.getpid(),proof_sha256=p.digest(p.canonical(proof)),regions=proof['appended_positive_regions'],final_copper=proof['final_copper'])))

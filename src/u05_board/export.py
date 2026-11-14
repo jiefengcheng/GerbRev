@@ -25,4 +25,4 @@ def actual_spindle_check(owner,regions,addition,window,foreign):
     # Test the physical plotted union directly. Re-subtracting and re-adding
     # owner copper can manufacture disconnected ULP-sized GEOS slivers.
     candidate=owner.union(unary_union(regions))
-    return check_spindle(owner,candidate,addition,window,foreign,gap=CONTRACT.hard_gap_mm)
+    return check_spindle(owner,candidate,addition,window,foreign,gap=CONTRACT.hard_gap_mm,quick_disjoint=True)

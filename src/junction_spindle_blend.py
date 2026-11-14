@@ -8,7 +8,8 @@ import math
 from shapely.geometry import box
 
 
-def spindle_blend(owner, radius, window, *, geometry=None):
+def spindle_addition(owner, radius, window, *, geometry=None):
+    """Compute the exact addition, sharing the closing across route windows."""
     if geometry is None:
         from src.stage_abi.preparation import geometry_memo
         geometry=geometry_memo()
@@ -17,16 +18,27 @@ def spindle_blend(owner, radius, window, *, geometry=None):
         raise ValueError('ONE_CONNECTED_QUALIFIED_OWNER_REQUIRED')
     # Keep exact predecessor contributions. Only the closing's added copper is
     # clipped to the declared local window; never erode the original owner.
-    if geometry is None:
+    def unwindowed_addition():
         closed=owner.buffer(radius,quad_segs=64).buffer(-radius,quad_segs=64)
-        addition=closed.difference(owner).intersection(window)
-        return owner.union(addition),addition
-    closed=geometry.buffer(geometry.buffer(owner,radius,quad_segs=64),-radius,quad_segs=64)
-    addition=geometry.intersection(geometry.difference(closed,owner),window)
-    return geometry.union(owner,addition),addition
+        return closed.difference(owner)
+
+    if geometry is None:
+        return unwindowed_addition().intersection(window)
+    addition=geometry.construct('spindle-unwindowed-addition', [owner], (radius,64),
+                                unwindowed_addition)
+    return geometry.intersection(addition,window)
 
 
-def check_spindle(owner, candidate, addition, window, foreign, gap=CONSTRUCTION_GAP_MM, *, geometry=None):
+def spindle_blend(owner, radius, window, *, geometry=None):
+    if geometry is None:
+        from src.stage_abi.preparation import geometry_memo
+        geometry=geometry_memo()
+    addition=spindle_addition(owner,radius,window,geometry=geometry)
+    candidate=owner.union(addition) if geometry is None else geometry.union(owner,addition)
+    return candidate,addition
+
+
+def check_spindle(owner, candidate, addition, window, foreign, gap=CONSTRUCTION_GAP_MM, *, geometry=None, quick_disjoint=False):
     if geometry is None:
         from src.stage_abi.preparation import geometry_memo
         geometry=geometry_memo()
@@ -38,8 +50,15 @@ def check_spindle(owner, candidate, addition, window, foreign, gap=CONSTRUCTION_
     if difference(owner,candidate).area>1e-12:failures.append('OWNER_REMOVED')
     if difference(addition,window).area>1e-12:failures.append('OUTSIDE_WINDOW')
     if symmetric_difference(candidate,union(owner,addition)).area>1e-12:failures.append('DELTA_MISMATCH')
+    owner_bounds=owner.bounds if quick_disjoint else None
     for sid,g in foreign:
-        if (g.difference(owner).is_empty if geometry is None else geometry.difference_empty(g,owner)):
+        disjoint=False
+        if quick_disjoint:
+            bounds=g.bounds
+            disjoint=(owner_bounds[2]<bounds[0] or bounds[2]<owner_bounds[0]
+                      or owner_bounds[3]<bounds[1] or bounds[3]<owner_bounds[1])
+        covered=False if disjoint else (g.difference(owner).is_empty if geometry is None else geometry.difference_empty(g,owner))
+        if covered:
             pairs.append(dict(source_id=sid,disposition='EXACTLY_COVERED_BY_QUALIFIED_OWNER'));continue
         distance=None if addition.is_empty else addition.distance(g)
         passed=distance is None or distance+1e-12>=gap

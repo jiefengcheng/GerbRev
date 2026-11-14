@@ -111,9 +111,13 @@ class PreparedWidthScene:
                     if oid==sid:continue
                     old=self.original[oid];neighbor=current[oid];key=(sid,oid)
                     if key not in self.ports:
-                        overlap=core.intersection(old)
-                        port=None if overlap.is_empty else overlap.buffer(max(self.widths[sid],self.widths[oid])+c.original_port_buffer_gap_mm,quad_segs=c.port_quad_segs)
-                        self.ports[key]=(port,not overlap.is_empty,indexed_distance(core,old))
+                        source_port=getattr(self,'source_port',None)
+                        if source_port is not None:
+                            self.ports[key]=source_port(sid,oid)
+                        else:
+                            overlap=core.intersection(old)
+                            port=None if overlap.is_empty else overlap.buffer(max(self.widths[sid],self.widths[oid])+c.original_port_buffer_gap_mm,quad_segs=c.port_quad_segs)
+                            self.ports[key]=(port,not overlap.is_empty,indexed_distance(core,old))
                     port,contact,original_gap=self.ports[key]
                     checked=visible_added if port is None else visible_added.difference(port)
                     exposed_neighbor=visible(oid)

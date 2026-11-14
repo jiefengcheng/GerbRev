@@ -48,9 +48,12 @@ def output_scene(store,scene,plan,*,replacements=None,additions=(),metadata=None
  result=dict(scene,objects=objects,lineage=scene['lineage']+[lineage],acceptance=dict(owner='PENDING',independent='NOT_RUN',native_electrical_manufacturing='NOT_ESTABLISHED'))
  reference=store.put_json('scene',result);return reference,result
 
-def check_output(store,scene,plan,candidate,*,replacements=None,additions=(),metadata=None,shared_gap_state_ref=None):
+def check_output(store,scene,plan,candidate,*,replacements=None,additions=(),metadata=None,shared_gap_state_ref=None,return_material=False):
  expected_ref,expected=output_scene(store,scene,plan,replacements=replacements,additions=additions,metadata=metadata,shared_gap_state_ref=shared_gap_state_ref)
  actual=validate_scene(store,candidate['output_scene_ref'])
  if actual!=expected or candidate['output_scene_ref']!=expected_ref:fail('OUTPUT_SCENE_BINDING_MISMATCH','complete source map and lineage')
- if store.get(candidate['before_ref'],kind='geometry')!=to_wkb(composed(store,scene)) or store.get(candidate['after_ref'],kind='geometry')!=to_wkb(composed(store,expected)):fail('SOURCE_RECONSTRUCTION_MISMATCH','cumulative scenes')
- return expected
+ if store.get(candidate['before_ref'],kind='geometry')!=to_wkb(composed(store,scene)):fail('SOURCE_RECONSTRUCTION_MISMATCH','cumulative scenes')
+ saved_after=store.get(candidate['after_ref'],kind='geometry')
+ after=composed(store,expected)
+ if saved_after!=to_wkb(after):fail('SOURCE_RECONSTRUCTION_MISMATCH','cumulative scenes')
+ return (expected,after) if return_material else expected

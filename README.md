@@ -2,6 +2,8 @@
 
 Standalone CLI for the source-only Gerber U05 route. It processes one explicitly selected Gerber artwork file. Both passes construct and check T01 → T03 → T04 → T02 → T05. The first pass and its verified export produce the local reference. The second pass uses that reference and runs the connected-copper checks, export, paired actual-file reparse, corruption controls, and final material audit.
 
+See the [performance handoff](docs/PERFORMANCE_HANDOFF.md) for this branch's changes and qualification steps.
+
 ## Workflow reference
 
 ![Chinese workflow reference covering T01 through T07](docs/images/workflow-reference.jpg)

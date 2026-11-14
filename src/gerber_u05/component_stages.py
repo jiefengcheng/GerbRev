@@ -61,12 +61,38 @@ def t01_land_checker(lands,fixed):
  return checker
 
 
+class _OwnerObstacles:
+ """One constrained geometry per owner of the live T01 material."""
+ def __init__(self,context):
+  self.context=context
+  self.by_owner={}
+
+ def get(self,owner,material):
+  entry=self.by_owner.get(owner)
+  # Reservations and checking envelopes are installed before the cache is
+  # created. A new immutable material object invalidates only its own owner.
+  if entry is None or entry[0] is not material:
+   entry=(material,constraint(self.context,owner,material))
+   self.by_owner[owner]=entry
+  return entry[1]
+
+ def matching(self,owned,owner,window):
+  for other,material in owned.items():
+   if other==owner:continue
+   body=self.get(other,material)
+   if body.intersects(window):yield other,body
+
+
 def run_t01(store,scene,binding):
  if cc.ACTIVE is None:return p.legacy_run_t01(store,scene,binding)
- ctx=cc.ACTIVE;sites=p.t01_sites(store,scene);_,current,_=p.operands(store,scene);meta=binding['width_metadata_rows'];shapes=[current[r['id']]for r in meta];raw=store.get(binding['width_metadata_encoding_ref'],kind='kernel-width-data');spec=p.specification();policy=dict(canonical_t01=p.marker(),family=p.marker()['family'],settings=spec['settings'],diameter_classes_mm=spec['diameter_classes_mm'])
- legacy=p.legacy_run_t01(store,scene,binding);allocation=legacy['allocation'];targets={d['source_id']:d['proposed_radius_mm']for d in legacy['decisions']};settings=p.CropSettings(**spec['settings']);square=set()
+ ctx=cc.ACTIVE
+ _,current,_=p.operands(store,scene)
+ sites=p.t01_sites(store,scene,current=current)
+ meta=binding['width_metadata_rows'];spec=p.specification()
+ legacy=p.legacy_run_t01(store,scene,binding,prepared=(sites,current));allocation=legacy['allocation'];targets={d['source_id']:d['proposed_radius_mm']for d in legacy['decisions']};settings=p.CropSettings(**spec['settings'])
  legacy_scene=store.get_json(legacy['output_scene_ref'],kind='scene');_,current,_=p.operands(store,legacy_scene);reserve_prior(ctx,store)
  functional=getattr(ctx,'functional',None);functional_owned=functional.project(current)if functional is not None else{}
+ functional_obstacles=_OwnerObstacles(functional) if functional is not None else None
  floor_repairs=[]
  owners=ctx.project(current);ids=list(owners);constraints={o:constraint(ctx,o,owners[o])for o in ids};tree=STRtree([constraints[o]for o in ids])
  for site in sites:
@@ -75,27 +101,26 @@ def run_t01(store,scene,binding):
   integral_core=ctx.cores[own]
   if functional is not None:
    channel=functional.owner(sid,core);integral_core=functional.cores[channel]
-   foreign.extend(constraint(functional,o,g) for o,g in functional_owned.items()if o!=channel and g.intersects(floor.buffer(p.CONSTRUCTION_GAP_MM+.00002).envelope))
+   window=floor.buffer(p.CONSTRUCTION_GAP_MM+.00002).envelope
+   foreign.extend(functional_obstacles.get(o,g) for o,g in functional_owned.items()if o!=channel and g.intersects(window))
   corrected,proof=guard_legacy_floor(core,floor,integral_core,foreign,sid in set(allocation['priorities_by_physical_component'].values()))
   if proof is not None:
    for alias in site['aliases']:current[alias]=corrected
    if functional is not None:functional_owned=functional.project(current)
    owners[own]=ctx.project(current)[own];constraints[own]=constraint(ctx,own,owners[own]);tree=STRtree([constraints[o]for o in ids]);floor_repairs.append(dict(source_id=sid,**proof))
  after=dict(current);owners=ctx.project(current);memo=GeometryMemo(ctx.binding+'t01');decisions=[];priority=set(allocation['priorities_by_physical_component'].values());order=sorted(priority)+[s['source_id']for s in sites if s['source_id']not in priority];byid={s['source_id']:s for s in sites};gap=p.CONSTRUCTION_GAP_MM+.00002
+ owner_obstacles=_OwnerObstacles(ctx)
  for sid in order:
   site=byid[sid];core=site['core'];floor=current[sid];radius=targets[sid];owner=ctx.owner(sid,core);cap=core.union(p.Point(*site['center']).buffer(radius,quad_segs=settings.qsegs));reason=None
   if radius==site['radius']:candidate=core
   else:
-   ids=list(owners);tree=STRtree([owners[o]for o in ids]);foreign=[o for j in sorted(map(int,tree.query(cap.buffer(gap).envelope)))if(o:=ids[j])!=owner]
-   foreign=[o for o in ctx.index.ids if o!=owner and (constraint(ctx,o,owners[o]).intersects(cap.buffer(gap).envelope))]
-   foreign_bodies={o:constraint(ctx,o,owners[o])for o in foreign}
+   window=cap.buffer(gap).envelope
+   foreign_bodies=dict(owner_obstacles.matching(owners,owner,window))
+   foreign=list(foreign_bodies)
    integral_core=ctx.cores[owner]
    if functional is not None:
     channel=functional.owner(sid,core);integral_core=functional.cores[channel]
-    for o,g in functional_owned.items():
-     if o==channel:continue
-     body=constraint(functional,o,g)
-     if body.intersects(cap.buffer(gap).envelope):foreign_bodies['functional:'+o]=body
+    foreign_bodies.update(('functional:'+o,g) for o,g in functional_obstacles.matching(functional_owned,channel,window))
    forbidden=p.unary_union([memo.buffer(g,gap,quad_segs=128)for g in foreign_bodies.values()])
    optional=cap.difference(core);existing=optional.intersection(integral_core);new=optional.difference(integral_core).difference(forbidden)
    pieces=[g for g in surface_parts(existing.union(new))if g.area>0 and g.distance(core)<=1e-9]
@@ -117,7 +142,7 @@ def run_t01(store,scene,binding):
   for alias in site['aliases']:after[alias]=candidate
   decisions.append(dict(source_id=sid,aliases=site['aliases'],original_owner_id=owner,source_radius_mm=site['radius'],selected_radius_mm=radius,added_area_mm2=candidate.difference(core).area,decision='KEEP'if p.to_wkb(candidate)==p.to_wkb(core)else'GROW_CONNECTED_COPPER',reason=reason,source_core_preserved=candidate.covers(core),selected_cap_sha256=p.digest(p.to_wkb(cap))))
   if len(decisions)%64==0:print(p.canonical(dict(stage='t01',sites_done=len(decisions),sites=len(sites))).decode(),flush=True)
- lands=[dict(id=s['source_id'],original=s['core'],candidate=after[s['source_id']],native_source_kind='gr_circle',native_stroke_width_mm=0.)for s in sites];omit={a for s in sites for a in s['aliases']};fixed=[dict(id=s,geometry=g,trace_width_mm=next(r['trace_width_mm']for r in meta if r['id']==s))for s,g in current.items()if s not in omit]
+ lands=[dict(id=s['source_id'],original=s['core'],candidate=after[s['source_id']],native_source_kind='gr_circle',native_stroke_width_mm=0.)for s in sites];omit={a for s in sites for a in s['aliases']};width_by_id={r['id']:r['trace_width_mm'] for r in meta};fixed=[dict(id=s,geometry=g,trace_width_mm=width_by_id[s])for s,g in current.items()if s not in omit]
  checker=t01_land_checker(lands,fixed)
  from src.t01_region_contacts import install_prepared_ports
  region_ports=install_prepared_ports(checker,meta)

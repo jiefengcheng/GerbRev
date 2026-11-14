@@ -77,11 +77,11 @@ def main():
   value=audit(run);p.save(run/'audits/t01'/('supplement_'+mode+'.json'),value)
  elif name=='legacy_export':
   from . import legacy_export as e
-  body,ledger=e.construct(run);folder=run/'export'
+  folder=run/'export'
   if mode=='construct':
-   folder.mkdir();(folder/'top.art.gbr').write_bytes(body);p.save(folder/'ledger.json',ledger)
+   body,ledger=e.construct(run);e.save_constructed(run,body,ledger)
   else:
-   if body!=(folder/'top.art.gbr').read_bytes()or p.canonical(ledger)!=p.canonical(p.load(folder/'ledger.json')):raise ValueError('FRESH_LEGACY_EXPORT_RECONSTRUCTION_CHANGED')
+   body,ledger=e.load_constructed(run)
    proof=e.check(run,body,ledger);p.save(folder/('proof_'+mode+'.json'),proof)
  else:raise ValueError('UNKNOWN_OPERATION')
  verify_sources(run);print(json.dumps(dict(status='PASS',stage=name,mode=mode,pid=os.getpid(),seconds=time.monotonic()-start)),flush=True)

@@ -53,21 +53,28 @@ class LandAdapter:
   files=[Path(__file__),Path(__file__).with_name('runtime.py'),Path(__file__).parents[1]/'prepared_land_scene.py',Path(__file__).parents[1]/'joint_rectangle_growth.py',Path(__file__).parents[1]/'prepared_width_scene.py',Path(__file__).parents[1]/'crop_stage_growth.py',Path(__file__).parents[1]/'shape_containment.py']
   if self.stage=='t02':files.extend([Path(shared_gaps.__file__),Path(__file__).parents[1]/'t02_rectangle_exposure.py',Path(__file__).parents[1]/'t02_gap_settings.py'])
   return dict(family=land_parameters(self.stage)['family'],implementation=hashlib.sha256(b''.join(p.read_bytes() for p in files)).hexdigest(),operations=['plan','run','verify'],source_support='Filled circles with explicit diameter classes' if self.stage=='t01' else 'Axis-aligned filled rectangles and connected inclusive fills; no trace/junction edits')
+ def _shared_gap_records(self,store,scene,original,current):
+  return shared_gaps.records(scene,original,current)
  def _context(self,store,scene,policy,details):
   if policy.get('stage')!=self.stage or canonical(policy.get('parameters'))!=canonical(land_parameters(self.stage)):fail('POLICY_UNSUPPORTED','land family')
   rows,current,original=operands(store,scene);ids=details['targets']
   if details.get('containment')!=containment_records(current,ids):fail('CONTAINMENT_PLAN_CHANGED','Reconstruct stage-entry copper and aliases')
   if self.stage=='t02'and details.get('rectangle_exposure')!=exposure_records(scene,original,ids,exposure_settings()):fail('RECTANGLE_EXPOSURE_PLAN_CHANGED','Reconstruct original perimeter eligibility')
-  if self.stage=='t02'and details.get('shared_neighbor_gaps')!=shared_gaps.records(scene,original,current):fail('SHARED_GAP_PLAN_CHANGED','Reconstruct complete original neighbor faces')
+  if self.stage=='t02'and details.get('shared_neighbor_gaps')!=self._shared_gap_records(store,scene,original,current):fail('SHARED_GAP_PLAN_CHANGED','Reconstruct complete original neighbor faces')
   kind='gr_circle' if self.stage=='t01' else 'gr_poly';parts=[dict(id=s,original=current[s],candidate=current[s],native_source_kind=kind,native_stroke_width_mm=0.) for s in ids];fixed=[dict(id=s,geometry=g,trace_width_mm=rows[s]['metadata'].get('nominal_width_mm',0.)) for s,g in current.items() if s not in ids];checker=PreparedLandScene(parts,fixed)
   # Current predecessor geometry provides visibility; only original contacts may
   # authorize land-to-trace attachment ports after earlier route/width changes.
-  for sid in ids:
-   for oid in checker.ids:
-    if oid==sid:continue
-    if not original[sid].intersects(original[oid]):
-     checker.ports[(sid,oid)]=(None,False,original[sid].distance(original[oid]));continue
-    overlap=original[sid].intersection(original[oid]);width=max(checker.widths[sid],checker.widths[oid])+checker.contract.original_port_buffer_gap_mm;checker.ports[(sid,oid)]=(prepared_buffer(overlap,width,quad_segs=checker.contract.port_quad_segs),True,original[sid].distance(original[oid]))
+  widths=checker.widths
+  contract=checker.contract
+  def source_port(sid,oid):
+   land,neighbor=original[sid],original[oid]
+   contact=land.intersects(neighbor)
+   port=None
+   if contact:
+    width=max(widths[sid],widths[oid])+contract.original_port_buffer_gap_mm
+    port=prepared_buffer(land.intersection(neighbor),width,quad_segs=contract.port_quad_segs)
+   return port,contact,land.distance(neighbor)
+  checker.source_port=source_port
   return rows,current,original,checker,box(*scene['viewport_mm'])
  def plan(self,store,scene,policy,selection,bounds):
   closed(selection,{'stage','scene_ref','source_ids'},'land selection');bounds_check(bounds,scene,selection);rows,current,original=operands(store,scene);targets=sorted(selection['source_ids']);parameters={}
@@ -91,7 +98,7 @@ class LandAdapter:
     if not g.covers(core) or not cap.covers(g) or g.centroid.distance(core.centroid)>1e-12:fail('PREDECESSOR_OUTSIDE_RECTANGLE_CAP',sid)
   details=dict(targets=targets,bounds=bounds,parameters=parameters,family=land_parameters(self.stage)['family'],containment=containment_records(current,targets))
   if self.stage=='t02':details['rectangle_exposure']=exposure_records(scene,original,targets,exposure_settings())
-  if self.stage=='t02':details['shared_neighbor_gaps']=shared_gaps.records(scene,original,current)
+  if self.stage=='t02':details['shared_neighbor_gaps']=self._shared_gap_records(store,scene,original,current)
   self._context(store,scene,policy,details);return details
  def _check(self,checker,current,selected,ids):
   kind='gr_circle' if self.stage=='t01' else 'gr_poly'
@@ -110,8 +117,9 @@ class LandAdapter:
   details=plan['details'];rows,current,original,checker,crop=self._context(store,scene,policy,details);ids=details['targets'];selected={s:current[s] for s in ids};budget=Budget(details['bounds']);decisions=[]
   for ordinal,sid in enumerate(ids):
    core=current[sid];covered=details['containment'][sid]['contained'];attempts=[]
+   cap=scale(original[sid],1.25,1.25,origin=original[sid].centroid) if self.stage=='t02' else None
    def feasible(candidate):
-    budget.evaluation();trial=dict(selected,**{sid:candidate});q=self._check(checker,current,trial,ids);cap_ok=self.stage!='t02' or scale(original[sid],1.25,1.25,origin=original[sid].centroid).covers(candidate);passed=q['passed'] and candidate.covers(core) and cap_ok and candidate.difference(crop).area<=1e-12;attempts.append(dict(candidate_sha256=hashlib.sha256(to_wkb(candidate)).hexdigest(),passed=passed,failures=q['failures']+([] if cap_ok else [dict(reason='ORIGINAL_RECTANGLE_CEILING_EXCEEDED')])));return passed
+    budget.evaluation();trial=dict(selected,**{sid:candidate});q=self._check(checker,current,trial,ids);cap_ok=cap is None or cap.covers(candidate);passed=q['passed'] and candidate.covers(core) and cap_ok and candidate.difference(crop).area<=1e-12;attempts.append(dict(candidate_sha256=hashlib.sha256(to_wkb(candidate)).hexdigest(),passed=passed,failures=q['failures']+([] if cap_ok else [dict(reason='ORIGINAL_RECTANGLE_CEILING_EXCEEDED')])));return passed
    candidate=core;shape={}
    if not covered and self.stage=='t01':
     p=details['parameters'][sid]
@@ -131,8 +139,9 @@ class LandAdapter:
   current_after=dict(current,**selected);merges=[];additions=[]
   if self.stage=='t02':merges,additions=self._merges(store,scene,plan,rows,current_after,budget)
   replacements={r['source_id']:r['candidate_ref'] for r in decisions};out_ref,out=output_scene(store,scene,plan,replacements=replacements,additions=additions,shared_gap_state_ref=store.put_json('shared-gap-state',shared)if shared is not None else None)
-  if shared is not None:shared_gaps.complete(shared,composed(store,out))
-  return dict(status='CONSTRUCTED',before_ref=store.put('geometry',to_wkb(composed(store,scene))),after_ref=store.put('geometry',to_wkb(composed(store,out))),output_scene_ref=out_ref,decisions=decisions,inclusive_candidates=merges,checks=final,evaluations=budget.evaluations,protected_source_refs={s:r['geometry_ref'] for s,r in rows.items() if s not in ids},**({'shared_neighbor_gaps':shared}if shared is not None else{}))
+  after=composed(store,out)
+  if shared is not None:shared_gaps.complete(shared,after)
+  return dict(status='CONSTRUCTED',before_ref=store.put('geometry',to_wkb(composed(store,scene))),after_ref=store.put('geometry',to_wkb(after)),output_scene_ref=out_ref,decisions=decisions,inclusive_candidates=merges,checks=final,evaluations=budget.evaluations,protected_source_refs={s:r['geometry_ref'] for s,r in rows.items() if s not in ids},**({'shared_neighbor_gaps':shared}if shared is not None else{}))
  def _merges(self,store,scene,plan,rows,current,budget):
   crop=box(*scene['viewport_mm']);ids=[s for s in plan['details']['targets']if not plan['details']['containment'][s]['contained']and exposure_eligible(plan['details'],s)];groups=merge_groups(ids,current);before=unary_union([current[s] for s in sorted(current)]).intersection(crop);claimed=set();accepted=[];decisions=[];additions=[]
   for ordinal,(axis,members) in enumerate(groups):
@@ -194,7 +203,7 @@ class LandAdapter:
    merged,additions=self._merges(store,scene,plan,rows,dict(current,**selected),Budget(details['bounds']))
    if merged!=candidate['inclusive_candidates']:fail('INCLUSIVE_RECONSTRUCTION_MISMATCH','complete merge ledger')
   elif candidate['inclusive_candidates']:fail('T02_SCOPE_LEAK','T01 cannot merge rectangles')
-  out=check_output(store,scene,plan,candidate,replacements=replacements,additions=additions,shared_gap_state_ref=store.put_json('shared-gap-state',shared)if self.stage=='t02'else None)
-  if self.stage=='t02':shared_gaps.complete(shared,composed(store,out))
+  _,after=check_output(store,scene,plan,candidate,replacements=replacements,additions=additions,shared_gap_state_ref=store.put_json('shared-gap-state',shared)if self.stage=='t02'else None,return_material=True)
+  if self.stage=='t02':shared_gaps.complete(shared,after)
   checkpoint(dict(reconstructed_targets=len(ids),inclusive_fills=len(additions)))
   return dict(passed=final['passed'],failures=final['failures'],check=final,reconstructed_targets=len(ids),inclusive_fills=len(additions),scope='Complete selected land source replay and current simultaneous finite-surface geometry; no electrical/manufacturing claim')

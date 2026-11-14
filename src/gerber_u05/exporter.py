@@ -12,6 +12,7 @@ from .guard import verify_sources as verify_core_sources
 from src import component_clearance as cc
 from src.native_boundary_metric import distance as boundary_distance
 from .native_component_checks_final import project_groups,decoded_groups,clearance as native_clearance,completion as native_completion,final_inventory
+from .encoded_owner_projection import EncodedOwnerProjection
 
 def verify_sources(run):
     seal=verify_core_sources(run)
@@ -297,19 +298,28 @@ def construct(run):
         if sid not in current or p.to_wkb(g)!=p.to_wkb(current[sid]):
             parents=append_regions(g,'t05_floor',sid,records,blocks,store);encoded_current[sid]=p.unary_union([*([encoded_current[sid]]if sid in encoded_current else[]),*parents]);current[sid]=g
     joint_policy=p.load(run/'REMEDY_POLICY_SNAPSHOT.json').get('t05_joint_profiles',{})
-    for d in value['candidate']['decisions']:
-        if d['status']!='GROWN':continue
-        owner,radius,domain,foreign=adapter._operands(store,prepared,policy,value['plan']['details'],d);addition=p.geometry(store,d['patch_ref']);region,support=prepare_serialized_region(store,value,adapter,owner,domain,d,foreign);first=len(records);parents=append_regions(region,'t05',d['source_id'],records,blocks,store)
-        if isinstance(support,dict)and support.get('bounded_owner_surface')is not None:
-            for row in records[first:]:row['encoding_owner_surface']=support['bounded_owner_surface']
-        own=adapter.owner_for_route(d['source_id']);encoded_owner=adapter._integral_context.project(encoded_current)[own];preserve_point_contacts(encoded_owner,parents,d['source_id'],records,blocks,store)
-        if 'maximum_export_regions_per_attachment'in joint_policy:
-            from .compact_contours import require_budget
-            emitted=[p.geometry(store,r['geometry_ref'])for r in records[first:]]
-            for land_id in d['land_ids']:
-                contact_window=p.geometry(store,objects[land_id]['geometry_ref']).buffer(2*radius,quad_segs=64)
-                require_budget(sum(g.intersects(contact_window)for g in emitted),1,joint_policy['maximum_export_regions_per_attachment'])
-    adapter.close()
+    projection=None
+    grown=[decision for decision in value['candidate']['decisions'] if decision['status']=='GROWN']
+    try:
+        if grown:
+            with adapter.execution(store,prepared,policy):
+                for d in grown:
+                    owner,radius,domain,foreign=adapter._operands(store,prepared,policy,value['plan']['details'],d);addition=p.geometry(store,d['patch_ref']);region,support=prepare_serialized_region(store,value,adapter,owner,domain,d,foreign);first=len(records);parents=append_regions(region,'t05',d['source_id'],records,blocks,store)
+                    if isinstance(support,dict)and support.get('bounded_owner_surface')is not None:
+                        for row in records[first:]:row['encoding_owner_surface']=support['bounded_owner_surface']
+                    own=adapter.owner_for_route(d['source_id'])
+                    if projection is None:
+                        projection=EncodedOwnerProjection(adapter._integral_context,encoded_current)
+                    encoded_owner=projection.owner_surface(own)
+                    preserve_point_contacts(encoded_owner,parents,d['source_id'],records,blocks,store)
+                    if 'maximum_export_regions_per_attachment'in joint_policy:
+                        from .compact_contours import require_budget
+                        emitted=[p.geometry(store,r['geometry_ref'])for r in records[first:]]
+                        for land_id in d['land_ids']:
+                            contact_window=p.geometry(store,objects[land_id]['geometry_ref']).buffer(2*radius,quad_segs=64)
+                            require_budget(sum(g.intersects(contact_window)for g in emitted),1,joint_policy['maximum_export_regions_per_attachment'])
+    finally:
+        adapter.close()
     final=store.get_json(value['output_scene_ref'],kind='scene');finalrows={r['source_id']:r for r in final['objects']}
     for fill in value['intra']['fills']:
         sid=fill['source_id'];append_regions(p.geometry(store,finalrows[sid]['geometry_ref']),'t05_finish',sid,records,blocks,store)
@@ -350,10 +360,12 @@ def native_model_reference(run,store,before,*,include_parents=False):
         if row['kind']!='component_remedy':continue
         shape=p.geometry(store,row['geometry_ref'])
         if sid not in current or p.to_wkb(shape)!=p.to_wkb(current[sid]):prepare(shape,sid,'t05_floor')
+    grown=[decision for decision in value['candidate']['decisions'] if decision['status']=='GROWN']
     try:
-        for d in value['candidate']['decisions']:
-            if d['status']!='GROWN':continue
-            owner,radius,domain,foreign=adapter._operands(store,prepared,policy,value['plan']['details'],d);region,_=prepare_serialized_region(store,value,adapter,owner,domain,d,foreign);prepare(region,d['source_id'],'t05')
+        if grown:
+            with adapter.execution(store,prepared,policy):
+                for d in grown:
+                    owner,radius,domain,foreign=adapter._operands(store,prepared,policy,value['plan']['details'],d);region,_=prepare_serialized_region(store,value,adapter,owner,domain,d,foreign);prepare(region,d['source_id'],'t05')
     finally:adapter.close()
     final_rows={row['source_id']:row for row in final['objects']}
     for fill in value['intra']['fills']:
@@ -394,10 +406,10 @@ def encoding_support_parents(store,records,value):
         parents[identity]=native
     return list(parents.items())
 
-def treated_attachment_outcome(required,maximum,before,regions):
+def treated_attachment_outcome(required,maximum,before,regions,*,prepared=None):
     """Use actual predecessor coverage without claiming nonexistent new growth."""
     try:
-        return dict(status='TREATED_VERIFIED',check=obligation_check(required,before,regions))
+        return dict(status='TREATED_VERIFIED',check=obligation_check(required,before,regions,prepared=prepared))
     except ValueError as failure:
         if str(failure)!='U05_ACTUAL_ATTACHMENT_NO_EFFECT':raise
         # Both complete extents must already exist, either directly or as
@@ -420,7 +432,7 @@ def treated_attachment_outcome(required,maximum,before,regions):
                             complete_approved_and_unclipped_maximum_included=True,
                             positive_faces_or_holes_dropped_after_normalization=0,
                             tolerance_allowance=False)
-        prior=obligation_check(maximum,before,[],already=True)
+        prior=obligation_check(maximum,before,[],already=True,prepared=prepared)
         return dict(status='ALREADY_SATISFIED_VERIFIED',check=prior,
                     native_predecessor_reconciliation=dict(
                         source_model_status='TREATED_VERIFIED',
@@ -438,7 +450,8 @@ def check(run,body,ledger):
     verify_sources(run);store,binding=context(run);raw=store.get(binding['source_ref'],kind='gerber-source');original,_,_=p.source_profile.parse_source(raw);actual=parse(body);n=len(original.objects)
     expected_base,_=canonical_base(raw)
     if not body.startswith((expected_base+'\n').encode('ascii')):raise ValueError('ORIGINAL_CANONICAL_COMMAND_PREFIX_CHANGED')
-    if p.digest(body)!=ledger['generated_sha256']or len(actual.objects)!=n+len(ledger['records']):raise ValueError('GENERATED_GERBER_COUNT_OR_HASH_CHANGED')
+    body_sha256=p.digest(body)
+    if body_sha256!=ledger['generated_sha256']or len(actual.objects)!=n+len(ledger['records']):raise ValueError('GENERATED_GERBER_COUNT_OR_HASH_CHANGED')
     source_shapes=[];reference_source_shapes=[];proofs=[]
     for i,(a,b)in enumerate(zip(original.objects,actual.objects[:n])):
         ga,_=p.source_profile.object_geometry(a);gb,_=p.source_profile.object_geometry(b,arc_grid=p.source_profile.source_arc_grid(a))
@@ -473,7 +486,7 @@ def check(run,body,ledger):
         if any(g.is_empty or not g.is_valid for g in parts):raise ValueError('APPEND_ONLY_OPERAND_INVALID')
         result=core if not parts else p.unary_union([core,*parts])
         key=(p.digest(p.to_wkb(core)),p.digest(p.to_wkb(result)))
-        certificates[key]=dict(proof='EXACT_ORIGINAL_PREFIX_AND_PARSED_POSITIVE_APPEND_OPERANDS',generated_sha256=p.digest(body),core_sha256=key[0],candidate_sha256=key[1],positive_operand_sha256=[p.digest(p.to_wkb(g))for g in parts])
+        certificates[key]=dict(proof='EXACT_ORIGINAL_PREFIX_AND_PARSED_POSITIVE_APPEND_OPERANDS',generated_sha256=body_sha256,core_sha256=key[0],candidate_sha256=key[1],positive_operand_sha256=[p.digest(p.to_wkb(g))for g in parts])
         return result
     class ActualCoreProof:
         def required_new_copper_gap(self):
@@ -508,13 +521,9 @@ def check(run,body,ledger):
                 if stage=='t02':
                     # Match source-bound T02 port permissions, not contacts
                     # introduced by earlier stages' larger predecessor copper.
-                    for land in lands:
-                        sid=land['id']
-                        for oid in checker.ids:
-                            if oid==sid:continue
-                            a,b=original_shapes[sid],original_shapes[oid];overlap=a.intersection(b);contact=not overlap.is_empty;w=max(checker.widths[sid],checker.widths[oid])+checker.contract.original_port_buffer_gap_mm
-                            port,port_proof=original_contact_port(overlap,w,contact);checker.ports[(sid,oid)]=(port,contact,a.distance(b))
-                            if port_proof is not None:native_port_proofs.append(dict(source_id=sid,neighbor_id=oid,**port_proof))
+                    if cc.ACTIVE is None:raise ValueError('T02_NATIVE_OWNER_CONTEXT_REQUIRED')
+                    from .native_land_contacts import source_contact_ports
+                    native_port_proofs=source_contact_ports(checker,lands,original_shapes,original_contact_port)
                 q=checker.check(lands,materialize_scene=True)
                 q['actual_file_required_gap_mm']=p.HARD_GAP_MM;q['original_source_native_port_proofs']=native_port_proofs
                 if inclusive_bindings:q['inclusive_predecessor_bindings']=inclusive_bindings
@@ -548,14 +557,18 @@ def check(run,body,ledger):
     declared=store.get_json(value['plan']['scene_ref'],kind='scene')
     nominal_adapter=p.CoverageAdapter(p.box(*declared['viewport_mm']));declared_domains={}
     try:
-        for decision in value['candidate']['decisions']:
-            if decision['status']=='GROWN':declared_domains[decision['source_id']]=nominal_adapter._operands(store,declared,policy,value['plan']['details'],decision)[2]
+        with nominal_adapter.execution(store,declared,policy):
+            for decision in value['candidate']['decisions']:
+                if decision['status']=='GROWN':declared_domains[decision['source_id']]=nominal_adapter._operands(store,declared,policy,value['plan']['details'],decision)[2]
     finally:nominal_adapter.close()
     adapter=p.CoverageAdapter(p.box(*prepared['viewport_mm']));preimage=p.unary_union(list(current.values()));patches=[]
-    for d in value['candidate']['decisions']:
-        if d['status']!='GROWN':continue
-        owner,radius,domain,foreign=adapter._operands(store,prepared,policy,value['plan']['details'],d);declared_domain=declared_domains[d['source_id']];parts=by_stage['t05'][d['source_id']];addition=native_spindle_operand(parts);net_addition=addition.difference(preimage);patches.append(dict(id=d['source_id'],original_owner_id=adapter.owner_for_route(d['source_id']),owner=owner,regions=parts,addition=addition,net_addition=net_addition,window=declared_domain.buffer(POLYGON_TOLERANCE_MM),foreign=foreign))
-    adapter.close();checks['t05']=[]
+    try:
+        with adapter.execution(store,prepared,policy):
+            for d in value['candidate']['decisions']:
+                if d['status']!='GROWN':continue
+                owner,radius,domain,foreign=adapter._operands(store,prepared,policy,value['plan']['details'],d);declared_domain=declared_domains[d['source_id']];parts=by_stage['t05'][d['source_id']];addition=native_spindle_operand(parts);net_addition=addition.difference(preimage);patches.append(dict(id=d['source_id'],original_owner_id=adapter.owner_for_route(d['source_id']),owner=owner,regions=parts,addition=addition,net_addition=net_addition,window=declared_domain.buffer(POLYGON_TOLERANCE_MM),foreign=foreign))
+    finally:adapter.close()
+    checks['t05']=[]
     for patch in patches:
         q=actual_spindle_check(patch['owner'],patch['regions'],patch['addition'],patch['window'],patch['foreign']+[(other['id'],other['addition'])for other in patches if other['id']!=patch['id']and other['original_owner_id']!=patch['original_owner_id']])
         p.save(run/'export'/('junction_'+sys.argv[2]+'_'+str(len(checks['t05']))+'.json'),dict(source_id=patch['id'],check=q)) if __name__=='__main__' else None
@@ -563,19 +576,24 @@ def check(run,body,ledger):
         if not q['passed']:raise ValueError('ACTUAL_GERBER_JUNCTION_CHECK_FAILED:'+patch['id']+':'+str(q['failures']))
         checks['t05'].append(dict(source_id=patch['id'],check=q))
     # Dynamic source-contact obligations; no C03 historical counts are imported.
+    from src.u05_board.attachment_export import PreparedAttachmentCopper
+    attachment_copper=PreparedAttachmentCopper(preimage)
     model=store.get_json(value['plan']['scene_ref'],kind='scene');adapter=p.CoverageAdapter(p.box(*model['viewport_mm']));_,model_current,_=p.operands(store,model);model_before=p.geometry(store,value['candidate']['before_ref']);attachments=[]
-    for d in value['candidate']['decisions']:
-        if not d['land_ids']:continue
-        owner,radius,domain,foreign=adapter._operands(store,model,policy,value['plan']['details'],d);desired=adapter._blend(owner,radius,domain)[1];needs=adapter.needs(model_current,d,radius,desired.difference(model_before));selected=p.geometry(store,d['patch_ref']).difference(model_before)if d['status']=='GROWN'else p.Polygon();parts=by_stage['t05'].get(d['source_id'],[])
-        if len(needs)!=len(d['attachment_outcomes']):raise ValueError('ACTUAL_ATTACHMENT_INVENTORY_CHANGED')
-        for need,outcome in zip(needs,d['attachment_outcomes']):
-            if any(outcome[k]!=need[k]for k in('id','land_id','reference_land_id','required_reference')):raise ValueError('ACTUAL_ATTACHMENT_MEMBERSHIP_CHANGED')
-            if outcome['status']=='TREATED_VERIFIED':actual=treated_attachment_outcome(selected.intersection(need['window']),desired.intersection(need['window']),preimage,parts)
-            elif outcome['status']=='ALREADY_SATISFIED_VERIFIED':actual=dict(status=outcome['status'],check=obligation_check(desired.intersection(need['window']),preimage,[],already=True))
-            elif outcome['status']=='BLOCKED_CLEARANCE_OR_BOUNDARY'and not outcome['required_reference']:actual=dict(status=outcome['status'],check=dict(passed=False,status='BLOCKED_NOT_COUNTED_AS_COVERED'))
-            else:raise ValueError('ACTUAL_ATTACHMENT_OUTCOME_NOT_QUALIFIED')
-            attachments.append(dict(id=outcome['id'],source_model_status=outcome['status'],**actual))
-    adapter.close();checks['attachment_obligations']=attachments
+    try:
+        with adapter.execution(store,model,policy):
+            for d in value['candidate']['decisions']:
+                if not d['land_ids']:continue
+                owner,radius,domain,foreign=adapter._operands(store,model,policy,value['plan']['details'],d);desired=adapter._blend_addition(owner,radius,domain);needs=adapter.needs(model_current,d,radius,desired.difference(model_before));selected=p.geometry(store,d['patch_ref']).difference(model_before)if d['status']=='GROWN'else p.Polygon();parts=by_stage['t05'].get(d['source_id'],[])
+                if len(needs)!=len(d['attachment_outcomes']):raise ValueError('ACTUAL_ATTACHMENT_INVENTORY_CHANGED')
+                for need,outcome in zip(needs,d['attachment_outcomes']):
+                    if any(outcome[k]!=need[k]for k in('id','land_id','reference_land_id','required_reference')):raise ValueError('ACTUAL_ATTACHMENT_MEMBERSHIP_CHANGED')
+                    if outcome['status']=='TREATED_VERIFIED':actual=treated_attachment_outcome(selected.intersection(need['window']),desired.intersection(need['window']),preimage,parts,prepared=attachment_copper)
+                    elif outcome['status']=='ALREADY_SATISFIED_VERIFIED':actual=dict(status=outcome['status'],check=obligation_check(desired.intersection(need['window']),preimage,[],already=True,prepared=attachment_copper))
+                    elif outcome['status']=='BLOCKED_CLEARANCE_OR_BOUNDARY'and not outcome['required_reference']:actual=dict(status=outcome['status'],check=dict(passed=False,status='BLOCKED_NOT_COUNTED_AS_COVERED'))
+                    else:raise ValueError('ACTUAL_ATTACHMENT_OUTCOME_NOT_QUALIFIED')
+                    attachments.append(dict(id=outcome['id'],source_model_status=outcome['status'],**actual))
+    finally:adapter.close()
+    checks['attachment_obligations']=attachments
     groups_before=project_groups(current);t05_observed={}
     for stage_name in ('t05',):
         for sid,pieces in by_stage[stage_name].items():t05_observed.setdefault(sid,[]).extend(pieces)
@@ -604,8 +622,9 @@ def check(run,body,ledger):
 if __name__=='__main__':
     p.configure();run=Path(sys.argv[1]);mode=sys.argv[2]
     if mode=='construct':
-        body,ledger=construct(run);folder=run/'export';folder.mkdir();(folder/'top.art.gbr').write_bytes(body);p.save(folder/'ledger.json',ledger)
+        from .legacy_export import save_constructed
+        body,ledger=construct(run);folder=run/'export';save_constructed(run,body,ledger)
     else:
-        folder=run/'export';body=(folder/'top.art.gbr').read_bytes();ledger=p.load(folder/'ledger.json');expected_body,expected_ledger=construct(run)
-        if body!=expected_body or p.canonical(ledger)!=p.canonical(expected_ledger):raise ValueError('FRESH_EXPORT_RECONSTRUCTION_CHANGED')
+        from .legacy_export import load_constructed
+        folder=run/'export';body,ledger=load_constructed(run)
         proof=check(run,body,ledger);p.save(folder/('proof_'+mode+'.json'),proof);print(json.dumps(dict(status='PASS',pid=os.getpid(),proof_sha256=p.digest(p.canonical(proof)),regions=proof['appended_positive_regions'],final_copper=proof['final_copper'])))

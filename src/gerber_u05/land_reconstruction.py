@@ -74,9 +74,10 @@ def reconstruct(adapter,store,scene,policy,plan,recorded):
     replacements={row['source_id']:row['candidate_ref']for row in decisions}
     out_ref,out=output_scene(store,scene,plan,replacements=replacements,additions=additions,
                             shared_gap_state_ref=store.put_json('shared-gap-state',shared))
-    t02_shared_gaps.complete(shared,composed(store,out))
+    after=composed(store,out)
+    t02_shared_gaps.complete(shared,after)
     candidate=dict(status='CONSTRUCTED',before_ref=store.put('geometry',to_wkb(composed(store,scene))),
-                   after_ref=store.put('geometry',to_wkb(composed(store,out))),output_scene_ref=out_ref,
+                   after_ref=store.put('geometry',to_wkb(after)),output_scene_ref=out_ref,
                    decisions=decisions,inclusive_candidates=merges,checks=retained['checks'],
                    evaluations=evaluations,protected_source_refs=protected,shared_neighbor_gaps=shared)
     if canonical(candidate)!=canonical(retained):

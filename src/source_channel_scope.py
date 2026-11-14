@@ -22,7 +22,7 @@ class Scope:
   if ids is None:ids=self.assign(sid,g)
   if len(ids)!=1:raise ValueError('ONE_FUNCTIONAL_CHANNEL_REQUIRED:'+sid)
   return ids[0]
- def iter_project(self,material):
+ def projection_operands(self,material):
   buckets={o:[g]for o,g in self.cores.items()}
   for sid,g in material.items():
    if sid in self.frame_ids:
@@ -33,7 +33,9 @@ class Scope:
    if ids is None:ids=self.assign(sid,g)
    if len(ids)!=1:raise ValueError('DERIVED_MATERIAL_NOT_ONE_FUNCTIONAL_CHANNEL:'+sid)
    buckets[ids[0]].append(g)
-  for own,values in buckets.items():yield own,cc.joined(values)
+  return buckets
+ def iter_project(self,material):
+  for own,values in self.projection_operands(material).items():yield own,cc.joined(values)
  def project(self,material):return dict(self.iter_project(material))
  def partial_pocket_failures(self,after):
   failures=[]

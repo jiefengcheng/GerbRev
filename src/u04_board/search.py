@@ -2,6 +2,7 @@
 from src.clearance_policy import HARD_GAP_MM, CONSTRUCTION_GAP_MM, CONTACT_BUFFER_MM, LEGACY_CONSTRUCTION_MM, BARRIER_GAP_MM
 import hashlib
 from pathlib import Path
+from copy import deepcopy
 from shapely import to_wkb,from_wkb,STRtree
 from shapely.geometry import box
 from shapely.affinity import scale
@@ -15,11 +16,24 @@ from src.stage_abi.journal import ACTIVE as EXECUTION_JOURNAL, journalled
 from src.joint_rectangle_growth import fit_joint_rectangle
 from src.crop_stage_growth import check_proposal,GrowthContract
 from src.stage_abi.preparation import prepared_tree as STRtree
-from src.stage_abi.preparation import prepared_buffer
 from src.shape_containment import ContainmentIndex,records as containment_records
 from src import t02_shared_gaps as shared_gaps
 
 class FastRectangleAdapter(LandAdapter):
+ def _shared_gap_records(self,store,scene,original,current):
+  from src import component_clearance
+  context=component_clearance.ACTIVE
+  source=tuple(context.originals.items()) if context is not None and context.source_hash==scene['source_sha256'] else None
+  # Callers have already re-read every geometry reference from the store.
+  # The accepted stage-entry scene and policy determine this preparation.
+  key=(store,digest(canonical(scene)),shared_gaps.policy(),source)
+  prepared=getattr(self,'_prepared_shared_gaps',None)
+  if prepared is None or key!=prepared[0]:
+   prepared=(key,super()._shared_gap_records(store,scene,original,current))
+   self._prepared_shared_gaps=prepared
+  # Keep caller-edited plans separate from the record used to check them.
+  return deepcopy(prepared[1])
+
  def describe(self):
   value=super().describe()
   value['implementation']=digest(canonical(value)+Path(__file__).read_bytes())
@@ -37,18 +51,12 @@ class FastRectangleAdapter(LandAdapter):
    _,current,original=operands(store,scene)
    if details.get('containment')!=containment_records(current,details['targets']):fail('CONTAINMENT_PLAN_CHANGED','Prepared context must revalidate containment')
    if self.stage=='t02'and details.get('rectangle_exposure')!=exposure_records(scene,original,details['targets'],exposure_settings()):fail('RECTANGLE_EXPOSURE_PLAN_CHANGED','Prepared context must revalidate source perimeter')
-   if self.stage=='t02'and details.get('shared_neighbor_gaps')!=shared_gaps.records(scene,original,current):fail('SHARED_GAP_PLAN_CHANGED','Prepared context must revalidate complete neighbor faces')
+   if self.stage=='t02'and details.get('shared_neighbor_gaps')!=self._shared_gap_records(store,scene,original,current):fail('SHARED_GAP_PLAN_CHANGED','Prepared context must revalidate complete neighbor faces')
    return self._prepared_context
   rows,current,original,checker,crop=super()._context(store,scene,policy,details)
   # Port permission remains bound to original native source widths, even
   # though the finite obstacle surface is the widened current predecessor.
   for oid,row in rows.items():checker.widths[oid]=row['metadata'].get('original_width_mm',checker.widths[oid])
-  for sid in details['targets']:
-   for oid in checker.ids:
-    if oid==sid:continue
-    width=max(checker.widths[sid],checker.widths[oid])+checker.contract.original_port_buffer_gap_mm
-    contact=original[sid].intersects(original[oid]);overlap=original[sid].intersection(original[oid]) if contact else None
-    checker.ports[(sid,oid)]=(prepared_buffer(overlap,width,quad_segs=checker.contract.port_quad_segs) if contact else None,contact,original[sid].distance(original[oid]))
   self._prepared_key=key;self._prepared_context=(rows,current,original,checker,crop)
   return self._prepared_context
  def _trial_check(self,checker,current,selected,ids):
@@ -63,6 +71,7 @@ class FastRectangleAdapter(LandAdapter):
   details=plan['details'];rows,current,original,checker,crop=self._context(store,scene,policy,details);ids=details['targets'];selected={s:current[s] for s in ids};budget=Budget(details['bounds']);decisions=[];source_ids=list(current);tree=STRtree([current[s] for s in source_ids])
   for ordinal,sid in enumerate(ids):
    core=current[sid];covered=details['containment'][sid]['contained'];attempts=[]
+   cap=scale(original[sid],1.25,1.25,origin=original[sid].centroid) if self.stage=='t02' else None
    # Both axis orders revisit identical candidates. The other lands are
    # fixed during this search, so their complete trial proof remains valid.
    trial_cache={};trial_cache_bytes=0
@@ -80,7 +89,7 @@ class FastRectangleAdapter(LandAdapter):
       size=len(canonical(failures))+256
       if trial_cache_bytes+size<=1024**2:
        trial_cache[candidate_sha]=(scene_passed,failures);trial_cache_bytes+=size
-    cap_ok=self.stage!='t02' or scale(original[sid],1.25,1.25,origin=original[sid].centroid).covers(candidate)
+    cap_ok=cap is None or cap.covers(candidate)
     passed=scene_passed and candidate.covers(core) and cap_ok and candidate.difference(crop).area<=1e-12
     attempts.append(dict(candidate_sha256=candidate_sha,passed=passed,failures=failures+([] if cap_ok else [dict(reason='ORIGINAL_RECTANGLE_CEILING_EXCEEDED')])))
     return passed
@@ -106,8 +115,9 @@ class FastRectangleAdapter(LandAdapter):
   current_after=dict(current,**selected);merges=[];additions=[]
   if self.stage=='t02':merges,additions=self._merges(store,scene,plan,rows,current_after,budget)
   replacements={r['source_id']:r['candidate_ref'] for r in decisions};out_ref,out=output_scene(store,scene,plan,replacements=replacements,additions=additions,shared_gap_state_ref=store.put_json('shared-gap-state',shared)if shared is not None else None)
-  if shared is not None:shared_gaps.complete(shared,composed(store,out))
-  return dict(status='CONSTRUCTED',before_ref=store.put('geometry',to_wkb(composed(store,scene))),after_ref=store.put('geometry',to_wkb(composed(store,out))),output_scene_ref=out_ref,decisions=decisions,inclusive_candidates=merges,checks=final,evaluations=budget.evaluations,protected_source_refs={s:r['geometry_ref'] for s,r in rows.items() if s not in ids},**({'shared_neighbor_gaps':shared}if shared is not None else{}))
+  after=composed(store,out)
+  if shared is not None:shared_gaps.complete(shared,after)
+  return dict(status='CONSTRUCTED',before_ref=store.put('geometry',to_wkb(composed(store,scene))),after_ref=store.put('geometry',to_wkb(after)),output_scene_ref=out_ref,decisions=decisions,inclusive_candidates=merges,checks=final,evaluations=budget.evaluations,protected_source_refs={s:r['geometry_ref'] for s,r in rows.items() if s not in ids},**({'shared_neighbor_gaps':shared}if shared is not None else{}))
  def _merges(self,store,scene,plan,rows,current,budget):
   crop=box(*scene['viewport_mm']);ids=[s for s in plan['details']['targets']if not plan['details']['containment'][s]['contained']and exposure_eligible(plan['details'],s)];groups=merge_groups(ids,{s:from_wkb(store.get(rows[s]['original_ref'],kind='geometry')) for s in ids});before=unary_union([current[s] for s in sorted(current)]).intersection(crop);claimed=set();accepted=[];decisions=[];additions=[];source_ids=list(current);tree=STRtree([current[s] for s in source_ids])
   for ordinal,(axis,members) in enumerate(groups):

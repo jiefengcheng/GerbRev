@@ -48,7 +48,7 @@ class Context:
         if owners is None:owners=self.assign(sid,g)
         if len(owners)!=1:raise ValueError('ONE_ORIGINAL_OWNER_REQUIRED:'+sid)
         return owners[0]
-    def iter_project(self,material):
+    def projection_operands(self,material):
         buckets={o:[self.cores[o]]for o in self.index.ids}
         for sid,g in material.items():
             if sid in self.originals and to_wkb(g)==to_wkb(self.originals[sid]):continue
@@ -58,7 +58,9 @@ class Context:
             else:
                 if sid not in self.originals or to_wkb(g)!=to_wkb(self.originals[sid]):raise ValueError('MULTI_OWNER_OCCURRENCE_CHANGED')
                 for o in owners:buckets[o].append(g.intersection(self.cores[o]))
-        for o,values in buckets.items():yield o,joined(values)
+        return buckets
+    def iter_project(self,material):
+        for o,values in self.projection_operands(material).items():yield o,joined(values)
     def project(self,material):return dict(self.iter_project(material))
     def register_scene(self,store,scene):
         pending_lineage=[];validated_partials={}
@@ -237,9 +239,12 @@ class OwnerCheck:
             if fail_fast and failures:break
         failures.extend(self.ctx.partial_pocket_failures(after))
         failed_owners={r.get('owner')for r in failures}
+        pair_indexes={}
+        for i,pair in enumerate(pairs):
+            pair_indexes.setdefault(pair['owner'],[]).append(i)
         for r in results:
             r['passed']=r['passed']and r['original_owner_id']not in failed_owners
-            r['foreign_owner_pair_indexes']=[i for i,q in enumerate(pairs)if q['owner']==r['original_owner_id']]
+            r['foreign_owner_pair_indexes']=list(pair_indexes.get(r['original_owner_id'],()))
         image=joined(current.values())if materialize_scene else None
         binding_vector=digest(canonical(results))
         recorded=results if materialize_scene else []

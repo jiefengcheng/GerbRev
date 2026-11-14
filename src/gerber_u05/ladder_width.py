@@ -7,7 +7,8 @@ from . import pipeline as p
 
 
 def run(store,scene,*,route_ids=None,settings=None,recorded=None):
-    rows,current,original=p.operands(store,scene);admission=p.width_admission(store,scene)
+    rows,current,original=p.operands(store,scene)
+    admission=p.width_admission(store,scene,loaded=(rows,current,original))
     all_paths={v['path_id']:v for v in admission['admitted']}
     if route_ids is not None and (len(set(route_ids))!=len(route_ids) or not set(route_ids)<=set(all_paths)):
         raise ValueError('T04_REQUESTED_ROUTE_BUNDLE_NOT_ADMITTED')
@@ -26,10 +27,15 @@ def run(store,scene,*,route_ids=None,settings=None,recorded=None):
     from .checking_envelopes import NATIVE_HEADROOM_MM
     checking_headroom=NATIVE_HEADROOM_MM if(store.root.parent/'LEGACY_REFERENCE_JOB.json').exists()else 0.
     binding=p.digest(p.canonical([scene['source_sha256'],settings.source_sha256,[[s,rows[s]['original_ref']]for s in sorted(used)],p.OFFSET_FAMILY,checking_headroom]))
-    parts=VersionedGeometry(used,binding,limit=32*1024**2)
     routes=VersionedGeometry(paths,binding,limit=128*1024**2)
+    part_builds=0
     def part(s,f,envelope):
-        return original[s]if f==1 else parts.get(s,f,envelope,lambda:p.offset_part(original[s],rows[s]['metadata']['minimum_caliper_mm'],f,envelope,extra_envelope_mm=checking_headroom if envelope else 0.))
+        nonlocal part_builds
+        if f==1:return original[s]
+        # Route cache hits already reuse the combined shape. Keeping a second
+        # cache of the intermediate offsets added churn across complete passes.
+        part_builds+=1
+        return p.offset_part(original[s],rows[s]['metadata']['minimum_caliper_mm'],f,envelope,extra_envelope_mm=checking_headroom if envelope else 0.)
     def route(s,f,envelope):
         return cores[s]if f==1 else routes.get(s,f,envelope,lambda:p.unary_union([part(m,f,envelope)for m in paths[s]['source_ids']]))
     def trial(factors,envelope):
@@ -61,15 +67,18 @@ def run(store,scene,*,route_ids=None,settings=None,recorded=None):
             verify_width_ledger(recorded,store)
             evaluations=recorded['evaluations']
         selected=solution['selected_scales'];full=p.PreparedWidthScene(baseline,fixed)
-        checks={name:full.check(trial(selected,envelope),materialize_scene=True)
-                for name,envelope in (('nominal',False),('envelope',True))}
+        checks={}
         for name,envelope in (('nominal',False),('envelope',True)):
-            material={s:route(s,selected[s],envelope)for s in paths}
+            selected_rows=trial(selected,envelope)
+            checks[name]=full.check(selected_rows,materialize_scene=True)
+            selected_geometry={row['id']:row['candidate'] for row in selected_rows}
+            material={s:selected_geometry[s] for s in paths}
             voids=[dict(scope=d.scope,**d.source_voids.complete(material,selected))for d in incremental.owner_checks]
             checks[name]['original_source_voids']=voids
             if any(not q['passed']for q in voids):
                 checks[name]['passed']=False
                 checks[name].setdefault('failures',[]).extend(f for q in voids for f in q['failures'])
+            del material,selected_geometry,selected_rows
         if not all(q['passed']for q in checks.values()):
             report=store.put_json('width-final-rejection',dict(schema='t04-complete-final-rejection/1',
                 solution=solution,checks=checks,settings=settings.resolved(),qualification='REJECTED_NOT_ACCEPTED'))
@@ -98,7 +107,9 @@ def run(store,scene,*,route_ids=None,settings=None,recorded=None):
                     solution=solution,checks=checks,evaluations=evaluations,part_factors=factors,
                     settings_snapshot=dict(source_sha256=settings.source_sha256,resolved=settings.resolved()),
                     checking_only_native_headroom_mm=checking_headroom,
-                    incremental=dict(incremental.diagnostics(),route_geometry=routes.diagnostics(),part_geometry=parts.diagnostics()),
+                    incremental=dict(incremental.diagnostics(),route_geometry=routes.diagnostics(),
+                                     part_geometry=dict(requests=part_builds,builds=part_builds,hits=0,
+                                                        retained_estimated_bytes=0,limit_bytes=0)),
                     source_offset_definition='Original-source uniform outward offset; per-route ten-rung ladder; simultaneous factor and total-width caps; unchanged source cores, centreline, smoothing and final checks.',
                     summary=dict(trace_occurrences=admission['trace_occurrences'],routes=len(paths),groups=len(admission['groups']),
                                  grown_parts=sum(f>1 for f in factors.values()),evaluations=solution['evaluation_count'],
@@ -116,4 +127,4 @@ def run(store,scene,*,route_ids=None,settings=None,recorded=None):
             # Search cache counters describe construction, not this verification.
             result['incremental']=recorded['incremental']
         return result
-    finally:parts.close();routes.close()
+    finally:routes.close()
