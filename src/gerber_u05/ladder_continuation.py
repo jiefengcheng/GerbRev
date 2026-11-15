@@ -115,4 +115,5 @@ def restore_entry(incremental, prefix, settings, widths):
     check['original_source_voids'] = voids
     if not check['passed'] or any(not value['passed'] for value in voids):
         raise ValueError('T04_RESTORED_PREFIX_FULL_ENTRY_REJECTED')
+    incremental.seed_fallback(check)
     return check

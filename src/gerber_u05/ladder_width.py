@@ -42,20 +42,41 @@ def run(store,scene,*,route_ids=None,settings=None,recorded=None):
         return [dict(id=s,original=cores[s],candidate=route(s,factors[s],envelope),verified_original_width_mm=port_widths[s])for s in sorted(paths)]
     baseline=trial(dict.fromkeys(paths,1.),True)
     fixed=[dict(id=s,geometry=g,trace_width_mm=rows[s]['metadata'].get('original_width_mm',0.))for s,g in current.items()if s not in used]
-    incremental=IncrementalRoutes(baseline,fixed,route,settings,widths,checking_headroom_mm=checking_headroom);evaluations=[]
+    from .ladder_continuation import read_schedule,verify_prefix,restore_entry
+    schedule=read_schedule(store.root.parent)
+    prefix=verify_prefix(store,scene,widths,settings)
+    evaluations=[]
+    journal=state=None
+    producer=store.root.parent/'PRODUCER_BINDING.json'
+    if recorded is None and route_ids is None and prefix is None and producer.is_file():
+        from src.hole_acceptance import ACTIVE as hole_policy
+        from .t04_pass_state import PassState
+        journal=PassState(store,store.root.parent/'t04_passes',
+                          [p.digest(producer.read_bytes()),p.digest(p.canonical(scene)),
+                           binding,schedule,hole_policy.get()])
+        state=journal.latest()
+        if state is not None:
+            journal.validate_ledger(state,widths,settings,schedule or [1]*settings.step_count)
+    incremental=IncrementalRoutes(baseline,fixed,route,settings,widths,
+                                  checking_headroom_mm=checking_headroom,resume=state is not None)
     def evaluate(s,f):
-        q=incremental.evaluate(s,f);evaluations.append(dict(route_id=s,factor=f,report_ref=store.put_json('width-check',q)));return q
+        q=incremental.evaluate(s,f)
+        evaluations.append(dict(route_id=s,factor=f,report_ref=store.put_json('width-check',q)))
+        return q
+    def save_pass(progress):
+        journal.save(progress,evaluations,incremental)
     try:
-        from .ladder_continuation import read_schedule,verify_prefix,restore_entry
-        schedule=read_schedule(store.root.parent)
-        prefix=verify_prefix(store,scene,widths,settings)
         restored=None
         if prefix is not None:
             restored=restore_entry(incremental,prefix,settings,widths)
             evaluations.extend(prefix['checked_geometry_reports'])
+        if state is not None:
+            journal.restore(state,incremental,settings,widths)
+            evaluations.extend(state['evaluations'])
         if recorded is None:
-            solution=solve(widths,settings,evaluate,incremental.accept,
-                           pass_increments=schedule,prefix=prefix)
+            solution=solve(widths,settings,evaluate,incremental.accept,pass_increments=schedule,
+                           prefix=prefix if state is None else state['prefix'],
+                           checkpoint=save_pass if journal is not None else None)
         else:
             from .width_ledger import verify_width_ledger
             solution=recorded['solution']

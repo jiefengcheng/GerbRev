@@ -5,7 +5,7 @@ SCHEMA = 'source-route-ten-step-width-ladder/1'
 
 
 def solve(widths, settings, evaluate, accept=lambda route, factor: None, *,
-          pass_increments=None, prefix=None):
+          pass_increments=None, prefix=None, checkpoint=None):
     """evaluate sees the current accepted scene; accept publishes one change.
 
     A rejected next rung may be reconsidered on the next complete pass. There
@@ -34,14 +34,16 @@ def solve(widths, settings, evaluate, accept=lambda route, factor: None, *,
         ledger = list(prefix['completed_attempts'])
         passes = list(prefix['completed_passes'])
         completed = len(passes)
-        if (set(rungs) != set(order) or completed >= len(increments)
-                or increments[:completed] != [1] * completed):
+        if (set(rungs) != set(order) or not 1 <= completed <= len(increments)
+                or [row['number'] for row in passes] != list(range(1, completed + 1))):
             raise ValueError('T04_PREFIX_SCHEDULE_CHANGED')
         for row in ledger:
             sid = row['route_id']
             attempts[sid] += 1
             last[sid] = row
-    for number in range(completed + 1, len(increments) + 1):
+    # A saved terminal pass must still reach the caller's final verification.
+    remaining = range(completed + 1, len(increments) + 1) if not passes or passes[-1]['advanced_routes'] else ()
+    for number in remaining:
         advanced = []
         for sid in order:
             if rungs[sid] == settings.step_count:
@@ -68,6 +70,9 @@ def solve(widths, settings, evaluate, accept=lambda route, factor: None, *,
                 rungs[sid] = candidate['rung']; advanced.append(sid)
             last[sid] = row
         passes.append(dict(number=number, advanced_routes=advanced))
+        if checkpoint is not None:
+            checkpoint(dict(accepted_rungs=dict(rungs), completed_attempts=list(ledger),
+                            completed_passes=list(passes)))
         if not advanced:
             break
     decisions = []

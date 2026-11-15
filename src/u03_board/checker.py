@@ -6,6 +6,7 @@ any current/previous finite neighbor changed. Every final native verification
 also runs the original full PreparedWidthScene predicate on nominal/envelope.
 """
 from collections import OrderedDict
+from dataclasses import asdict
 import zlib
 from shapely import STRtree,to_wkb,from_wkb,get_precision
 from shapely.geometry import box
@@ -30,6 +31,46 @@ class IncrementalWidthScene(PreparedWidthScene):
         self.original_union_targets=set(self.trace_ids)
         self.use_width_union_window=False
         self.original_union_boundary_rechecks=0
+
+    def proof_state(self):
+        return self.accepted_current, self.accepted_results, self.accepted_hash
+
+    def restore_proof_state(self, state):
+        self.accepted_current, self.accepted_results, self.accepted_hash = state
+
+    def seed_from_full_check(self, rows, report):
+        """Carry the complete physical witnesses from the same validated scene."""
+        if (not report['passed'] or not report['evaluation_complete']
+                or report['contract'] != asdict(self.contract)
+                or report['checked_trace_count'] != len(self.trace_ids)
+                or report['predecessor_union_wkb_sha256'] != self.predecessor_sha
+                or report['scene_object_count'] != len(self.original)
+                or report['fixed_object_count'] != self.fixed_count):
+            raise ValueError('T04_COMPLETE_ACCEPTED_CLEARANCE_REQUIRED')
+        proofs = {}
+        for witness in report['traces']:
+            sid = witness['trace_id']
+            if (sid in proofs or not witness['passed'] or witness['failures']
+                    or witness['original_trace_wkb_sha256'] != self.trace_ids.get(sid)):
+                raise ValueError('T04_ACCEPTED_CLEARANCE_WITNESS_CHANGED')
+            pairs = [dict(neighbor_id=pair['neighbor_id'], port_sha256=pair['original_port_wkb_sha256'],
+                          gap_mm=pair['new_exposed_to_visible_neighbor_gap_mm'], passed=not pair['failures'])
+                     for pair in witness['pairs']]
+            proofs[sid] = dict(trace_id=sid, candidate_sha256=witness['candidate_trace_wkb_sha256'],
+                               passed=True, pairs=pairs)
+        self.load_accepted_proofs(rows, proofs, digest(canonical(report)))
+
+    def load_accepted_proofs(self, rows, proofs, proof_hash):
+        candidates = {row['id']:row['candidate'] for row in rows}
+        if set(proofs) != set(self.trace_ids) or set(candidates) != set(self.trace_ids):
+            raise ValueError('T04_ACCEPTED_CLEARANCE_COVERAGE_CHANGED')
+        for sid, proof in proofs.items():
+            if (not proof['passed'] or proof['trace_id'] != sid
+                    or proof['candidate_sha256'] != self.cached_sha(candidates[sid])
+                    or any(not pair['passed'] or pair['neighbor_id'] == sid
+                           or pair['neighbor_id'] not in self.original for pair in proof.get('pairs', ()))):
+                raise ValueError('T04_ACCEPTED_CLEARANCE_WITNESS_CHANGED')
+        self.restore_proof_state((dict(self.original, **candidates), proofs, proof_hash))
 
     def original_union_key(self,sid,candidate):
         # The source operands and STRtree are immutable for this checker.

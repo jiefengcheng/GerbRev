@@ -91,7 +91,7 @@ class OwnerDependencies:
 
 
 class IncrementalRoutes:
-    def __init__(self,baseline,fixed,build,settings,source_widths,*,checking_headroom_mm=0.):
+    def __init__(self,baseline,fixed,build,settings,source_widths,*,checking_headroom_mm=0.,resume=False):
         from src.prepared_width_scene import PreparedWidthScene
         from src import component_clearance as cc, source_channel_scope as functional, pin_separation as pin
         self.parent=PreparedWidthScene(baseline,fixed);self.build=build
@@ -112,10 +112,22 @@ class IncrementalRoutes:
         if cc.ACTIVE is None:
             from src.u03_board.dependency import DependencyWidthScene
             self.fallback=DependencyWidthScene(baseline,fixed)
-        self.baseline_check=self.parent.check(CandidateSnapshot(tuple(self.rows)),fail_fast=True)
-        if not self.baseline_check['passed']:raise ValueError('T04_QUALIFIED_STAGE_ENTRY_REQUIRED')
+        if not resume:
+            self.baseline_check=self.parent.check(CandidateSnapshot(tuple(self.rows)),fail_fast=True)
+            if not self.baseline_check['passed']:raise ValueError('T04_QUALIFIED_STAGE_ENTRY_REQUIRED')
+            self.seed_fallback(self.baseline_check)
+
+    def seed_fallback(self, report):
+        if self.fallback is not None:
+            self.fallback.seed_from_full_check(self.rows, report)
+            # These caches contain geometry used by the same physical predicate.
+            self.fallback.visible_cache.update(self.parent.fixed_visibility)
+            self.fallback.visible_cache.update(self.parent.trace_visibility)
+            self.fallback.added_cache.update(self.parent.addition_visibility)
+            self.fallback.incremental_ports.update({key:value[0] for key,value in self.parent.ports.items()})
 
     def evaluate(self,sid,factor):
+        self.pending=None
         candidate=self.build(sid,factor,True);self.constructed_routes+=1
         self.parent.valid_geometry(candidate)
         if not candidate.covers(self.parent.original[sid]):
@@ -125,7 +137,15 @@ class IncrementalRoutes:
         for check in self.owner_checks:
             checks.append(check.check(sid,factor,candidate,self.current,self.versions))
             if not checks[-1]['passed']:break
-        if self.fallback is not None:checks.append(self.fallback.check(snapshot,fail_fast=True))
+        fallback_state=None
+        if self.fallback is not None:
+            prior=self.fallback.proof_state()
+            try:
+                checks.append(self.fallback.check(snapshot,fail_fast=True))
+                fallback_state=self.fallback.proof_state()
+            finally:
+                # A physical pass is provisional until every T04 gate passes.
+                self.fallback.restore_proof_state(prior)
         if self.owner_checks and all(q['passed']for q in checks):
             from src.t04_topology import check as topology_check
             checks.append(topology_check(self.owner_checks[-1],sid,factor,candidate,self.current,self.versions))
@@ -135,12 +155,14 @@ class IncrementalRoutes:
             if not q['passed'] and not q.get('failures'):
                 failures.extend(dict(reason='PIN_SEPARATION',pin_check=r)for r in q.get('checks',[])if not r['passed'])
         result=dict(passed=all(q['passed']for q in checks),failures=failures,checks=checks)
-        self.pending=(sid,factor,candidate,rows)if result['passed']else None
+        self.pending=(sid,factor,candidate,rows,fallback_state)if result['passed']else None
         return result
 
     def accept(self,sid,factor):
         if self.pending is None or self.pending[:2]!=(sid,factor):raise ValueError('T04_CHECKED_ROUTE_PROPOSAL_REQUIRED')
-        _,_,candidate,rows=self.pending;self.current[sid]=candidate;self.versions[sid]=factor
+        _,_,candidate,rows,fallback_state=self.pending
+        if self.fallback is not None:self.fallback.restore_proof_state(fallback_state)
+        self.current[sid]=candidate;self.versions[sid]=factor
         self.rows=rows;self.pending=None;self.accepted_updates+=1
 
     def diagnostics(self):
