@@ -14,14 +14,15 @@ KIND = 't04-pass-state'
 
 
 class PassState:
-    def __init__(self, store, directory, binding, *, first_pass=1):
+    def __init__(self, store, directory, binding, *, first_pass=1, marker_width=2):
         self.store = store
         self.directory = Path(directory)
         self.first_pass = first_pass
+        self.marker_width = marker_width
         self.binding = digest(canonical([binding, first_pass]))
         self.geometry_refs = {}
 
-    def save(self, prefix, evaluations, checker):
+    def save(self, prefix, evaluations, checker, *, number=None):
         if checker.pending is not None:
             raise ValueError('T04_PASS_STATE_HAS_PENDING_PROPOSAL')
         fallback = checker.fallback
@@ -41,14 +42,14 @@ class PassState:
                 cached = version, self.store.put('geometry', to_wkb(body, include_srid=True))
             self.geometry_refs[sid] = cached
             refs[sid] = cached[1]
-        number = len(prefix['completed_passes'])
+        number = len(prefix['completed_passes']) if number is None else number
         payload = dict(schema=KIND+'/1', binding=self.binding, number=number, prefix=prefix,
                        geometry=refs, physical=physical, evaluations=evaluations)
         ref = self.store.put_json(KIND, payload)
         if self.directory.is_symlink():
             raise ValueError('T04_PASS_STATE_UNSAFE_DIRECTORY')
         self.directory.mkdir(exist_ok=True)
-        path = self.directory / f'{number:02d}.json'
+        path = self.directory / f'{number:0{self.marker_width}d}.json'
         # Publish only a complete, synced artifact. Keep all prior pass markers.
         with NamedTemporaryFile(dir=self.directory, prefix='.pending-', delete=False) as stream:
             pending = Path(stream.name)
@@ -72,7 +73,7 @@ class PassState:
         if not markers:
             return None
         number = self.first_pass + len(markers) - 1
-        if [path.name for path in markers] != [f'{i:02d}.json' for i in range(self.first_pass, number+1)]:
+        if [path.name for path in markers] != [f'{i:0{self.marker_width}d}.json' for i in range(self.first_pass, number+1)]:
             raise ValueError('T04_PASS_STATE_SEQUENCE_CHANGED')
         marker = markers[-1]
         if marker.is_symlink():
