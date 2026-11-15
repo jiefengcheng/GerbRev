@@ -7,7 +7,8 @@ spurious tiny difference created by recomputing a large Boolean source union.
 The original audited verifier is preserved for independent final comparisons.
 """
 import math
-from shapely import STRtree
+from collections import OrderedDict
+from shapely import STRtree, get_num_coordinates
 from shapely.geometry import box
 from shapely.ops import unary_union
 from .trace_width_clearance import TraceWidthContract
@@ -15,7 +16,7 @@ from src.stage_abi.preparation import prepared_tree as STRtree
 
 
 class PreparedWidthScene:
-    def __init__(self,traces,fixed_copper,contract=TraceWidthContract()):
+    def __init__(self,traces,fixed_copper,contract=TraceWidthContract(), *, original_union_cache_bytes=0):
         if contract!=TraceWidthContract():raise ValueError('WIDTH_CLEARANCE_POLICY_CHANGED')
         if not traces:raise ValueError('NO_COMPLETE_TRACES')
         self.contract=contract;self.original={};self.widths={};self.trace_ids={};self.fixed_count=len(fixed_copper)
@@ -36,6 +37,9 @@ class PreparedWidthScene:
         # Opt in here, rather than on the class: filled lands have a separate
         # initializer and retain their existing owner-check calculation.
         self.owner_added_material=self._source_width_added_material
+        self.original_neighbor_unions = OrderedDict()
+        self.original_neighbor_union_limit = original_union_cache_bytes
+        self.original_neighbor_union_weight = 0
 
     @staticmethod
     def _source_width_added_material(predecessor,candidates):
@@ -71,6 +75,31 @@ class PreparedWidthScene:
             result=dict(result,pin_separation=proof,passed=result['passed']and proof['passed'],failures=[*result['failures'],*[dict(reason='PIN_SEPARATION',pin_check=r)for r in proof['checks']if not r['passed']]])
         return result
 
+    def original_neighbor_union(self, sid, candidate):
+        # A full-scene check queries the exact candidate envelope. Reuse
+        # only the same ordered original operands from this immutable scene.
+        indices = tuple(int(i) for i in self.tree.query(candidate.envelope)
+                        if self.ids[int(i)] != sid)
+        limit = getattr(self, "original_neighbor_union_limit", 0)
+        if not limit:
+            return unary_union([self.original[self.ids[i]] for i in indices])
+        cache = self.original_neighbor_unions
+        cached = cache.get(indices)
+        if cached is not None:
+            cache.move_to_end(indices)
+            return cached[0]
+        body = unary_union([self.original[self.ids[i]] for i in indices])
+        # Weight is an estimate for retained geometry and Python keys.
+        weight = 64 * int(get_num_coordinates(body)) + 40 * len(indices) + 512
+        if weight <= limit:
+            while cache and (self.original_neighbor_union_weight + weight > limit
+                             or len(cache) >= 4096):
+                _, (_, old_weight) = cache.popitem(last=False)
+                self.original_neighbor_union_weight -= old_weight
+            cache[indices] = body, weight
+            self.original_neighbor_union_weight += weight
+        return body
+
     def _physical_check(self,traces,*,materialize_scene=False,fail_fast=False):
         from src import component_clearance
         if component_clearance.ACTIVE is not None:
@@ -83,12 +112,17 @@ class PreparedWidthScene:
             if sha(r['original'])!=self.trace_ids[sid] or r['verified_original_width_mm']!=self.widths[sid]:raise ValueError('ORIGINAL_TRACE_BINDING_CHANGED')
             current[sid]=r['candidate']
         c=self.contract;tree=STRtree([current[sid] for sid in self.ids]);failures=[];results=[]
+        visible_in_call = {}
         def visible(sid):
+            # The proposal scene is immutable during this check. Resolve each
+            # neighbor once, including its version hash, for all pair callers.
+            if sid in visible_in_call:
+                return visible_in_call[sid]
             key=sha(current[sid]);cache=self.trace_visibility if sid in self.trace_ids else self.fixed_visibility
             if sid not in cache or cache[sid][0]!=key:
-                nearby=[self.original[self.ids[int(i)]] for i in self.tree.query(current[sid].envelope) if self.ids[int(i)]!=sid]
-                cache[sid]=(key,current[sid].difference(unary_union(nearby)))
-            return cache[sid][1]
+                cache[sid]=(key,current[sid].difference(self.original_neighbor_union(sid,current[sid])))
+            visible_in_call[sid] = cache[sid][1]
+            return visible_in_call[sid]
         for r in sorted(traces,key=lambda r:r['id']):
             sid=r['id'];core=self.original[sid];candidate=current[sid];reasons=[]
             exact_keep=sha(candidate)==self.trace_ids[sid]
