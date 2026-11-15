@@ -1,0 +1,35 @@
+{
+  "schema": "u05-incremental-stage-agent-abi/1",
+  "status": "adapter-design",
+  "operations": {
+    "bind": {
+      "inputs": ["stage", "source_catalogue_ref", "accepted_predecessor_ref", "policy_ref", "implementation_id"],
+      "outputs": ["binding_sha256"]
+    },
+    "propose": {
+      "inputs": ["binding_sha256", "accepted_state_ref", "cursor", "candidate_ref"],
+      "outputs": ["proposal_ref", "dependency_refs", "check_report_ref", "verdict"]
+    },
+    "accept": {
+      "inputs": ["accepted_state_ref", "proposal_ref", "check_report_ref"],
+      "requires": ["matching_state_binding", "all_proposal_gates_passed"],
+      "outputs": ["accepted_state_ref", "next_cursor"]
+    },
+    "checkpoint": {
+      "inputs": ["binding_sha256", "accepted_state_ref", "next_cursor", "ledger_refs"],
+      "outputs": ["checkpoint_ref"]
+    },
+    "resume": {
+      "inputs": ["binding_sha256", "checkpoint_ref"],
+      "requires": ["verified_artifacts", "matching_ledger_prefix", "matching_geometry_and_proof_bindings"],
+      "outputs": ["accepted_state_ref", "next_cursor"]
+    },
+    "finalize": {
+      "inputs": ["binding_sha256", "accepted_state_ref", "ledger_refs"],
+      "outputs": ["final_check_report_refs", "output_scene_ref", "comparison_receipt_ref", "timing_receipt_ref"]
+    }
+  },
+  "reuse_rule": "Reuse only a passing witness whose complete operand digests, dependency membership and policy binding match. Evaluate missing, changed and boundary witnesses through the adapter's exact checker.",
+  "rejection_rule": "Keep the check report and advance the ledger cursor while retaining the previous accepted state.",
+  "receipt_metrics": ["proposal_count", "accepted_count", "verdict_differences", "witness_coverage_differences", "numeric_differences", "final_check_verdicts", "wall_seconds_by_phase", "cpu_seconds_by_phase"]
+}

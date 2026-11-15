@@ -127,6 +127,7 @@ class IncrementalRoutes:
             self.fallback.incremental_ports.update({key:value[0] for key,value in self.parent.ports.items()})
 
     def evaluate(self,sid,factor):
+        """Evaluate a trial without publishing its provisional clearance state."""
         self.pending=None
         candidate=self.build(sid,factor,True);self.constructed_routes+=1
         self.parent.valid_geometry(candidate)
@@ -159,6 +160,7 @@ class IncrementalRoutes:
         return result
 
     def accept(self,sid,factor):
+        """Publish the exact trial only after all proposal gates have passed."""
         if self.pending is None or self.pending[:2]!=(sid,factor):raise ValueError('T04_CHECKED_ROUTE_PROPOSAL_REQUIRED')
         _,_,candidate,rows,fallback_state=self.pending
         if self.fallback is not None:self.fallback.restore_proof_state(fallback_state)

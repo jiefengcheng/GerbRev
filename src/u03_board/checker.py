@@ -35,6 +35,7 @@ class IncrementalWidthScene(PreparedWidthScene):
         self.accepted_pair_reuses = 0
 
     def proof_state(self):
+        """Return the accepted geometry, per-route witnesses, and proof-chain hash."""
         return self.accepted_current, self.accepted_results, self.accepted_hash
 
     def restore_proof_state(self, state):
@@ -221,6 +222,8 @@ class IncrementalWidthScene(PreparedWidthScene):
             if not candidate.covers(core): reasons.append('ORIGINAL_TRACE_CORE_REMOVED')
             if not exact:
                 key = self.cached_sha(candidate)
+                # Only an unchanged subject can carry an accepted pair witness.
+                # Index by neighbor ID for constant-time lookup during the fresh query.
                 applicable = {}
                 if (self.reuse_accepted_pairs and self.accepted_current is not None
                         and self.cached_sha(self.accepted_current[sid]) == key):
@@ -234,6 +237,9 @@ class IncrementalWidthScene(PreparedWidthScene):
                 for i in sorted(int(v) for v in tree.query(box(x0-radius,y0-radius,x1+radius,y1+radius))):
                     oid = self.ids[i]
                     if oid == sid: continue
+                    # The index still discovers every current neighbor. A missing
+                    # witness, changed operand, failed comparison, or boundary gap
+                    # falls through to the original geometry calculation.
                     prior = applicable.get(oid)
                     if (prior is not None and prior['passed']
                             and (prior['gap_mm'] is None or prior['gap_mm'] >
@@ -242,6 +248,8 @@ class IncrementalWidthScene(PreparedWidthScene):
                         pairs.append(prior)
                         self.accepted_pair_reuses += 1
                         continue
+                    # Build the exposed addition only if at least one pair needs
+                    # a fresh check. Retain the existing per-version geometry cache.
                     if added is None:
                         entry = self.added_cache.get(sid)
                         if entry is None or entry[0] != key:

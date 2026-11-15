@@ -26,6 +26,7 @@ HOLE_SNAPSHOT = "6c7d842557252f18b30fefee10c9186fd2dfda0bdabb1a655caaf8aa7c76f8c
 
 
 class ReplayStore(EvidenceStore):
+    """Read the sealed predecessor and write new evidence only to replay scratch."""
     def __init__(self, legacy, scratch):
         super().__init__(legacy)
         self.root = legacy / "runtime"
@@ -104,6 +105,8 @@ def main():
         (legacy / name).read_bytes()
         for name in ("T04_SETTINGS_SNAPSHOT.json", "T04_PASS_SCHEDULE.json")
     ]
+    # A checkpoint is tied to the saved inputs, checker implementation, and
+    # geometry runtime. A changed binding requires its own diagnostic workspace.
     implementation = [p.digest(path.read_bytes()) for path in
                       (Path(__file__), Path(__file__).with_name("replay_evidence.py"))]
     implementation.extend(p.digest(path.read_bytes()) for path in
@@ -184,6 +187,8 @@ def main():
             cursor = progress["cursor"]
             if not 0 <= cursor <= len(continuation):
                 raise ValueError("T04_REPLAY_CURSOR_CHANGED")
+            # Recompute the prefix decisions and accepted rungs from the sealed
+            # ledger and verified report bytes before restoring checker state.
             entries = iter(resume["evaluations"])
             for row in continuation[:cursor]:
                 if not row["candidate"]["within_growth_limits"]:
@@ -207,6 +212,8 @@ def main():
             timed("restore_checkpoint", journal.restore)(resume, checker, settings, widths)
             restored_exact = progress["exact_restored_entry"]
 
+        # The cursor points to the first unprocessed ledger row, including cap
+        # rejections. The evidence list includes only geometry proposals.
         def save_checkpoint(next_cursor):
             nonlocal checkpoint_number
             checkpoint_number += 1
@@ -232,6 +239,8 @@ def main():
                     raise SampleComplete
                 store.output.last_report = None
                 report = timed("proposal_check_and_report", evaluate)(sid, factor)
+                # The evaluator already stored the full report. Capture its
+                # logical reference instead of serializing the report again.
                 ref = store.output.last_report
                 if ref is None:
                     raise ValueError("T04_REPLAY_REPORT_REFERENCE_MISSING")
@@ -259,6 +268,8 @@ def main():
                 save_checkpoint(next_cursor)
         if checker.versions != solution["selected_scales"]:
             raise ValueError("Final factors differ from saved decisions")
+        # Returning the saved solution allows the normal ladder wrapper to
+        # perform its fresh nominal/envelope checks and output assembly.
         phase = "final_checks"
         return solution
 

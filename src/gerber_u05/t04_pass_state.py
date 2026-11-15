@@ -14,6 +14,11 @@ KIND = 't04-pass-state'
 
 
 class PassState:
+    """Content-addressed snapshots with an ordered, durable marker per save.
+
+    Normal ladder callers number by completed pass. Diagnostic callers may
+    supply a consecutive ordinal and validate their own partial-pass cursor.
+    """
     def __init__(self, store, directory, binding, *, first_pass=1, marker_width=2):
         self.store = store
         self.directory = Path(directory)
@@ -32,6 +37,8 @@ class PassState:
             if current is None or any(current[sid] is not geometry for sid, geometry in checker.current.items()):
                 raise ValueError('T04_PASS_STATE_UNACCEPTED_CLEARANCE')
             physical = dict(binding=fallback.binding, proof_hash=proof_hash, witnesses=proofs)
+        # Reuse geometry references for unchanged routes. Every marker still
+        # names the complete geometry map and passing witness state it restores.
         refs = {}
         for sid, body in checker.current.items():
             version = checker.versions[sid]
@@ -67,6 +74,7 @@ class PassState:
             pending.unlink()
 
     def latest(self):
+        """Read only the newest published marker after validating sequence and binding."""
         if self.directory.is_symlink():
             raise ValueError('T04_PASS_STATE_UNSAFE_DIRECTORY')
         markers = sorted(self.directory.glob('*.json'))
@@ -103,6 +111,7 @@ class PassState:
             raise ValueError('T04_PASS_STATE_LEDGER_CHANGED')
 
     def restore(self, state, checker, settings, widths):
+        """Load accepted geometry and witnesses after caller-side ledger validation."""
         restore_geometry(self.store, state['geometry'], checker, settings, widths,
                          state['prefix']['accepted_rungs'])
         self.geometry_refs = {sid: (checker.versions[sid], ref) for sid, ref in state['geometry'].items()}

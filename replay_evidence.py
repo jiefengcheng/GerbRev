@@ -10,6 +10,11 @@ from src.stage_abi.store import ArtifactStore, digest
 
 
 class ReplayEvidence(ArtifactStore):
+    """Keep logical artifact IDs stable across lossless on-disk encoding.
+
+    Width reports and checkpoint payloads use gzip. Other kinds retain the
+    normal artifact store format. Callers pass logical references to get().
+    """
     compressed_kinds = {"width-check", "t04-pass-state"}
 
     def __init__(self, root):
@@ -23,6 +28,8 @@ class ReplayEvidence(ArtifactStore):
         artifact_id = f"{kind}:{sha256}"
         ref = dict(artifact_id=artifact_id, sha256=sha256)
         path = self.root / "artifacts" / (artifact_id + ".gz")
+        # Key the lock by logical bytes, so a retried or concurrent write
+        # verifies and returns the existing object instead of publishing a copy.
         with self._lock("artifact-" + sha256):
             if path.is_symlink():
                 raise ValueError("T04_REPLAY_EVIDENCE_SYMLINK")
@@ -41,6 +48,7 @@ class ReplayEvidence(ArtifactStore):
                         os.fsync(stream.fileno())
                         if gzip.decompress(temp.read_bytes()) != blob:
                             raise ValueError("T04_REPLAY_EVIDENCE_CHANGED")
+                        # Publish only after reading back the exact logical bytes.
                         os.link(temp, path)
                         fd = os.open(path.parent, os.O_RDONLY)
                         try:

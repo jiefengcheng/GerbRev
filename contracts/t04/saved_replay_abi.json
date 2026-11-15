@@ -1,0 +1,49 @@
+{
+  "schema": "t04-saved-replay-agent-abi/1",
+  "version": 1,
+  "operation": "replay_saved_t04",
+  "cli": ["python", "-B", "profile_saved_t04.py", "EVIDENCE", "SCRATCH"],
+  "inputs": {
+    "EVIDENCE": "Root containing the sealed legacy T03 and T04 inputs and policy registry",
+    "SCRATCH": "Isolated writable replay directory for a single writer",
+    "--resume": "Continue from the newest verified marker in the same scratch directory",
+    "--limit": {"default": 7069, "minimum": 1, "maximum": 7069, "unit": "geometry proposals"},
+    "--checkpoint-every": {"default": 500, "minimum": 1, "unit": "geometry proposals"}
+  },
+  "artifact_reference": {
+    "fields": ["artifact_id", "sha256"],
+    "artifact_id": "<kind>:<sha256-of-logical-bytes>",
+    "reader": "ReplayEvidence.get(reference, kind=...)",
+    "encoding": {"width-check": "gzip", "t04-pass-state": "gzip"},
+    "verification": "Validate the logical SHA-256 after decoding before use"
+  },
+  "checkpoint": {
+    "marker_glob": "checkpoints/[0-9][0-9][0-9][0-9][0-9].json",
+    "marker_content": "Artifact reference",
+    "payload_kind": "t04-pass-state",
+    "prefix_fields": ["accepted_rungs", "cursor", "exact_restored_entry"],
+    "payload_fields": ["schema", "binding", "number", "prefix", "geometry", "physical", "evaluations"],
+    "cursor_semantics": "Zero-based index of the next continuation ledger row, including cap rejections",
+    "proposal_reference_fields": ["index", "report_ref", "saved_sha256"],
+    "binding": ["source", "predecessor", "saved_ledger", "settings", "schedule", "policy", "implementation", "geometry_runtime"],
+    "resume_validation": ["marker_sequence", "binding", "ordered_proposal_references", "report_hashes", "saved_verdicts", "accepted_rungs", "geometry_and_witness_bindings"]
+  },
+  "outputs": {
+    "T04_PROFILE.json": ["status", "error", "wall_s", "cpu_s", "completed_checks", "accepted_neighbor_updates", "parameter_cap_rejections_seen", "nonidentical_reports", "exact_restored_entry", "exact_final_reports", "timings_inclusive"],
+    "REPLAY_RESULT.json": ["output_scene_ref", "checks", "proposal_evidence_refs"],
+    "DECISION_MISMATCH.json": ["attempt", "report_ref"]
+  },
+  "states": {
+    "BOUNDED_SAMPLE_COMPLETE": "Saved prefix is available for a later continuation",
+    "COMPLETE_EXACT_REPLAY": "All proposal verdicts and reports, final reports, and output scene match",
+    "COMPLETE_WITH_REPORT_DIFFERENCES": "All proposal verdicts match and final checks passed. Inspect exact_final_reports, output_scene_ref and proposal evidence for differences.",
+    "FAILED": "Inspect error and saved evidence. A valid checkpoint may support continuation in the same workspace."
+  },
+  "agent_loop": [
+    "Inspect run lock, latest marker and receipt",
+    "Create isolated attempt or resume from a verified marker",
+    "Retain full reports once and compare current and saved proposal results",
+    "Require nominal and envelope results plus output scene comparison before reporting closure",
+    "Use phase timings and difference counts to select the next bounded optimization"
+  ]
+}
