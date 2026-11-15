@@ -111,7 +111,7 @@ class IncrementalRoutes:
         self.fallback=None
         if cc.ACTIVE is None:
             from src.u03_board.dependency import DependencyWidthScene
-            self.fallback=DependencyWidthScene(baseline,fixed)
+            self.fallback=DependencyWidthScene(baseline,fixed,reuse_accepted_pairs=True)
         if not resume:
             self.baseline_check=self.parent.check(CandidateSnapshot(tuple(self.rows)),fail_fast=True)
             if not self.baseline_check['passed']:raise ValueError('T04_QUALIFIED_STAGE_ENTRY_REQUIRED')

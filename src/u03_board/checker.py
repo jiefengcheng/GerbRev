@@ -18,7 +18,7 @@ from src.native_inventory import ERROR_MM
 
 
 class IncrementalWidthScene(PreparedWidthScene):
-    def __init__(self, traces, fixed, *, original_union_cache_bytes=512*1024**2):
+    def __init__(self, traces, fixed, *, original_union_cache_bytes=512*1024**2, reuse_accepted_pairs=False):
         if type(original_union_cache_bytes) is not int or original_union_cache_bytes<0:
             raise ValueError('U03_UNION_CACHE_BUDGET_INVALID')
         super().__init__(traces, fixed)
@@ -31,6 +31,8 @@ class IncrementalWidthScene(PreparedWidthScene):
         self.original_union_targets=set(self.trace_ids)
         self.use_width_union_window=False
         self.original_union_boundary_rechecks=0
+        self.reuse_accepted_pairs = reuse_accepted_pairs
+        self.accepted_pair_reuses = 0
 
     def proof_state(self):
         return self.accepted_current, self.accepted_results, self.accepted_hash
@@ -218,17 +220,36 @@ class IncrementalWidthScene(PreparedWidthScene):
             exact = self.cached_sha(candidate) == self.trace_ids[sid]
             if not candidate.covers(core): reasons.append('ORIGINAL_TRACE_CORE_REMOVED')
             if not exact:
-                key = self.cached_sha(candidate); entry = self.added_cache.get(sid)
-                if entry is None or entry[0] != key:
-                    retained=self.addition_visibility.get(sid)
-                    entry=retained if retained is not None and retained[0]==key else (key,candidate.difference(self.predecessor))
-                    self.added_cache[sid] = entry
-                added = entry[1]
+                key = self.cached_sha(candidate)
+                applicable = {}
+                if (self.reuse_accepted_pairs and self.accepted_current is not None
+                        and self.cached_sha(self.accepted_current[sid]) == key):
+                    # Stable candidate and neighbor versions bind the checked
+                    # copper, visibility, source attachment port and distance.
+                    applicable = {pair['neighbor_id']: pair
+                                  for pair in self.accepted_results[sid].get('pairs', ())}
+                added = None
                 radius = c.construction_gap_mm + c.comparison_epsilon_mm
                 x0,y0,x1,y1 = candidate.bounds
                 for i in sorted(int(v) for v in tree.query(box(x0-radius,y0-radius,x1+radius,y1+radius))):
                     oid = self.ids[i]
                     if oid == sid: continue
+                    prior = applicable.get(oid)
+                    if (prior is not None and prior['passed']
+                            and (prior['gap_mm'] is None or prior['gap_mm'] >
+                                 c.construction_gap_mm + c.comparison_epsilon_mm)
+                            and self.cached_sha(current[oid]) == self.cached_sha(self.accepted_current[oid])):
+                        pairs.append(prior)
+                        self.accepted_pair_reuses += 1
+                        continue
+                    if added is None:
+                        entry = self.added_cache.get(sid)
+                        if entry is None or entry[0] != key:
+                            retained = self.addition_visibility.get(sid)
+                            entry = retained if retained is not None and retained[0] == key else (
+                                key, candidate.difference(self.predecessor))
+                            self.added_cache[sid] = entry
+                        added = entry[1]
                     old = self.original[oid]; key = sid,oid
                     if key not in self.incremental_ports:
                         overlap = core.intersection(old)
