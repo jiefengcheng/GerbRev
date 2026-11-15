@@ -87,7 +87,7 @@ def run(store,scene,*,route_ids=None,settings=None,recorded=None):
                 raise ValueError('T04_RECORDED_LEDGER_SOURCE_OR_POLICY_CHANGED')
             verify_width_ledger(recorded,store)
             evaluations=recorded['evaluations']
-        selected=solution['selected_scales'];full=p.PreparedWidthScene(baseline,fixed,original_union_cache_bytes=128*1024**2)
+        selected=solution['selected_scales'];full=p.PreparedWidthScene(baseline,fixed)
         checks={}
         for name,envelope in (('nominal',False),('envelope',True)):
             selected_rows=trial(selected,envelope)
