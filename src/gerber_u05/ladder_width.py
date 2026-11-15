@@ -88,6 +88,8 @@ def run(store,scene,*,route_ids=None,settings=None,recorded=None):
             verify_width_ledger(recorded,store)
             evaluations=recorded['evaluations']
         selected=solution['selected_scales'];full=p.PreparedWidthScene(baseline,fixed)
+        if restored is not None:
+            full.inherit_source_visibility(incremental.parent)
         checks={}
         for name,envelope in (('nominal',False),('envelope',True)):
             selected_rows=trial(selected,envelope)

@@ -71,6 +71,27 @@ class PreparedWidthScene:
             result=dict(result,pin_separation=proof,passed=result['passed']and proof['passed'],failures=[*result['failures'],*[dict(reason='PIN_SEPARATION',pin_check=r)for r in proof['checks']if not r['passed']]])
         return result
 
+    def inherit_source_visibility(self, source):
+        """Carry exact visibility geometry from a completed check on the same source."""
+        if (self.contract != source.contract or self.ids != source.ids
+                or self.trace_ids != source.trace_ids
+                or any(self.original[sid] is not source.original[sid] for sid in self.ids)):
+            raise ValueError('WIDTH_VISIBILITY_SOURCE_BINDING_CHANGED')
+        # Reuse the same tree to preserve the original union operand ordering.
+        # The per-neighbor geometry hash still gates every carried result.
+        self.tree = source.tree
+        self.fixed_visibility.update(source.fixed_visibility)
+        self.trace_visibility.update(source.trace_visibility)
+
+    def _neighbor_visibility(self, sid, current):
+        key = sha(current[sid])
+        cache = self.trace_visibility if sid in self.trace_ids else self.fixed_visibility
+        if sid not in cache or cache[sid][0] != key:
+            nearby = [self.original[self.ids[int(i)]]
+                      for i in self.tree.query(current[sid].envelope) if self.ids[int(i)] != sid]
+            cache[sid] = key, current[sid].difference(unary_union(nearby))
+        return cache[sid][1]
+
     def _physical_check(self,traces,*,materialize_scene=False,fail_fast=False):
         from src import component_clearance
         if component_clearance.ACTIVE is not None:
@@ -83,12 +104,6 @@ class PreparedWidthScene:
             if sha(r['original'])!=self.trace_ids[sid] or r['verified_original_width_mm']!=self.widths[sid]:raise ValueError('ORIGINAL_TRACE_BINDING_CHANGED')
             current[sid]=r['candidate']
         c=self.contract;tree=STRtree([current[sid] for sid in self.ids]);failures=[];results=[]
-        def visible(sid):
-            key=sha(current[sid]);cache=self.trace_visibility if sid in self.trace_ids else self.fixed_visibility
-            if sid not in cache or cache[sid][0]!=key:
-                nearby=[self.original[self.ids[int(i)]] for i in self.tree.query(current[sid].envelope) if self.ids[int(i)]!=sid]
-                cache[sid]=(key,current[sid].difference(unary_union(nearby)))
-            return cache[sid][1]
         for r in sorted(traces,key=lambda r:r['id']):
             sid=r['id'];core=self.original[sid];candidate=current[sid];reasons=[]
             exact_keep=sha(candidate)==self.trace_ids[sid]
@@ -120,7 +135,7 @@ class PreparedWidthScene:
                             self.ports[key]=(port,not overlap.is_empty,indexed_distance(core,old))
                     port,contact,original_gap=self.ports[key]
                     checked=visible_added if port is None else visible_added.difference(port)
-                    exposed_neighbor=visible(oid)
+                    exposed_neighbor=self._neighbor_visibility(oid,current)
                     gap=None if checked.is_empty or exposed_neighbor.is_empty else indexed_distance(checked,exposed_neighbor)
                     pair_failures=[]
                     if gap is not None and gap+c.comparison_epsilon_mm<self.required_new_copper_gap():pair_failures.append('NEW_EXPOSED_COPPER_BELOW_CONSTRUCTION_GUARD')
