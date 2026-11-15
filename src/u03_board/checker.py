@@ -234,7 +234,7 @@ class IncrementalWidthScene(PreparedWidthScene):
                 added = None
                 radius = c.construction_gap_mm + c.comparison_epsilon_mm
                 x0,y0,x1,y1 = candidate.bounds
-                for i in sorted(int(v) for v in tree.query(box(x0-radius,y0-radius,x1+radius,y1+radius))):
+                for i in sorted(tree.query(box(x0-radius,y0-radius,x1+radius,y1+radius)).tolist()):
                     oid = self.ids[i]
                     if oid == sid: continue
                     # The index still discovers every current neighbor. A missing

@@ -202,7 +202,7 @@ class DependencyWidthScene(IncrementalWidthScene):
         if own!=self.trace_ids[sid]:
             r=self.contract.construction_gap_mm+self.contract.comparison_epsilon_mm
             x0,y0,x1,y1=current[sid].bounds
-            for i in sorted(int(i) for i in tree.query(box(x0-r,y0-r,x1+r,y1+r))):
+            for i in sorted(tree.query(box(x0-r,y0-r,x1+r,y1+r)).tolist()):
                 oid=self.ids[i]
                 if oid!=sid:neighbors.append([oid,self.cached_sha(current[oid]),self._visible_token(oid,current)])
         key=digest(canonical(dict(source=self.binding,route=sid,version=own,neighbors=neighbors)))
