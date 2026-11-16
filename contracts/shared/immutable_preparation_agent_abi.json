@@ -5,6 +5,7 @@
   "existing_implementations": {
     "t02": "contracts/t02/preparation_agent_abi.json",
     "t04": "contracts/t04/saved_replay_abi.json",
+    "t04_single_route_preparation": "contracts/t04/single_route_preparation_agent_abi.json",
     "stage_loop_design": "contracts/gerber_u05/incremental_stage_agent_abi.json"
   },
   "governing_rules": [

@@ -8,7 +8,7 @@
   "contracts/hole_acceptance/settings.json": "bcff0e3e0db43ecfde439e9bdc03ec40ff482afe20ab66471da6038eee35aedd",
   "contracts/pin_separation/settings.json": "1f59700136e5926462d216da3b09f7236cdee6b9eb2e8bf05146e0fcf8366844",
   "contracts/runtime_preparation/kernel_binding.json": "b6088181a24cc8335a1e5b3597b059c8b0059f7c157c10cd4dc170b1451a235a",
-  "contracts/shared/immutable_preparation_agent_abi.json": "9bd3d802285ffc39a29720ac61e28ba6ba08a635a590497d8d871e6d146efc39",
+  "contracts/shared/immutable_preparation_agent_abi.json": "0b8ccb930517be6b7c5c82acb82a4886283fce2fa0acbc12e320f23b8bd4c39c",
   "contracts/t01_bga_single/settings.json": "7355d5573fc6519a83510ae9cf7aa27b71e917c0aae6fae3e067fbdee0e15d78",
   "contracts/t01_canonical/contract.json": "e7a1e26bfae11926a006eb15a508ea8ac725e9af411dc4b12eabf62118cb8545",
   "contracts/t01_circle_exposure/settings.json": "94d1845bc080638ba7f01950dd1f4c3d0e48d028766b154dcd92b0cea119fa6d",
@@ -19,5 +19,6 @@
   "contracts/t04/pass_schedule.json": "212fefa78699d261eb315e094c7c6cbcdfb2e4c94c880bb2d3083fc57f43cbc6",
   "contracts/t04/saved_replay_abi.json": "78ec870acc9ab18d87558fdb519a790500e002517a9dd1c54850b3486e634cfb",
   "contracts/t04/settings.json": "ea938b634215191577b2a18da90ceca63be31ba50cfd49d75425e38da807b384",
+  "contracts/t04/single_route_preparation_agent_abi.json": "c6da757a82b33d543ebe726533dab89a078cb7f9337785728e1742f5762aeb47",
   "contracts/t05_joint/settings.json": "ea8ffb64c39ad7170e37ba14f3c058f01d2e7300b02799f7f469732bd7b85efd"
 }

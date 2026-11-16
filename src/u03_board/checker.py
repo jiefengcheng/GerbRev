@@ -193,13 +193,17 @@ class IncrementalWidthScene(PreparedWidthScene):
                 self.incremental_ports.update({key:value[0] for key,value in self.ports.items()})
             return result
         current,rows,changed=self.prepare_trial(traces)
-        c = self.contract; tree = self.spatial_index(current)
+        return self._check_prepared(traces, current, rows, changed, self.spatial_index(current))
+
+    def _check_prepared(self, traces, current, rows, changed, tree, *, oldtree=None):
+        c = self.contract
         self.use_width_union_window=True
         self.original_union_targets=changed
         self.invalidate_proofs(changed)
         affected = set(changed)
         if self.accepted_current is not None:
-            oldtree = self.spatial_index(self.accepted_current)
+            if oldtree is None:
+                oldtree = self.spatial_index(self.accepted_current)
             radius = c.construction_gap_mm + c.comparison_epsilon_mm
             for sid in changed:
                 # Symmetric finite-neighbor dependency, covering both insertion

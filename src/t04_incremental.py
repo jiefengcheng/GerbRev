@@ -91,7 +91,8 @@ class OwnerDependencies:
 
 
 class IncrementalRoutes:
-    def __init__(self,baseline,fixed,build,settings,source_widths,*,checking_headroom_mm=0.,resume=False):
+    def __init__(self,baseline,fixed,build,settings,source_widths,*,checking_headroom_mm=0.,resume=False,
+                 prepare_single_route=False):
         from src.prepared_width_scene import PreparedWidthScene
         from src import component_clearance as cc, source_channel_scope as functional, pin_separation as pin
         self.parent=PreparedWidthScene(baseline,fixed);self.build=build
@@ -99,6 +100,7 @@ class IncrementalRoutes:
         self.current={r['id']:r['original']for r in baseline};self.versions=dict.fromkeys(self.order,1.)
         self.rows=[CandidateTrace(s,self.current[s],self.current[s],self.parent.widths[s])for s in self.order]
         self.pending=None;self.constructed_routes=self.accepted_updates=0
+        self.prepare_single_route = prepare_single_route
         self.owner_checks=[];self.pin=pin.Prepared(self.parent,pin.ACTIVE)if pin.ACTIVE is not None else None
         from src.native_inventory import ERROR_MM
         padding={s:float(source_widths[s]*(settings.maximum_factor-1)/2)+ERROR_MM+checking_headroom_mm+self.parent.contract.comparison_epsilon_mm for s in self.order}
@@ -133,7 +135,8 @@ class IncrementalRoutes:
         self.parent.valid_geometry(candidate)
         if not candidate.covers(self.parent.original[sid]):
             return dict(passed=False,failures=[dict(trace_id=sid,reason='ORIGINAL_TRACE_CORE_REMOVED')])
-        rows=list(self.rows);rows[self.positions[sid]]=CandidateTrace(sid,self.parent.original[sid],candidate,self.parent.widths[sid])
+        proposal=CandidateTrace(sid,self.parent.original[sid],candidate,self.parent.widths[sid])
+        rows=list(self.rows);rows[self.positions[sid]]=proposal
         snapshot=CandidateSnapshot(tuple(rows));checks=[]
         for check in self.owner_checks:
             checks.append(check.check(sid,factor,candidate,self.current,self.versions))
@@ -142,7 +145,10 @@ class IncrementalRoutes:
         if self.fallback is not None:
             prior=self.fallback.proof_state()
             try:
-                checks.append(self.fallback.check(snapshot,fail_fast=True))
+                if self.prepare_single_route:
+                    checks.append(self.fallback._check_single_route(snapshot, proposal))
+                else:
+                    checks.append(self.fallback.check(snapshot,fail_fast=True))
                 fallback_state=self.fallback.proof_state()
             finally:
                 # A physical pass is provisional until every T04 gate passes.

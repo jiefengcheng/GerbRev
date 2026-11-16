@@ -1,0 +1,69 @@
+{
+  "schema": "t04-single-route-preparation-agent-abi/1",
+  "version": 1,
+  "status": "implemented-opt-in-python-checker",
+  "stage": "t04",
+  "implementation": "src/t04_incremental.py",
+  "transport": "In-process Python, one serialized checker per bound scene and policy",
+  "entry_points": {
+    "create": {
+      "signature": "IncrementalRoutes(baseline, fixed, build, settings, source_widths, *, checking_headroom_mm=0.0, resume=False, prepare_single_route=False)",
+      "enable": {"prepare_single_route": true},
+      "baseline_row": ["id", "original", "candidate", "verified_original_width_mm"],
+      "fixed_row": ["id", "geometry", "trace_width_mm"],
+      "build_signature": "build(route_id, factor, envelope) -> geometry",
+      "bindings": ["complete source route identities and original cores", "verified source and port widths", "accepted predecessor and exact geometry", "captured T04 settings and schedule", "active owner, topology and pin policies", "checking envelope and geometry runtime"],
+      "resume": "Use only in the owning continuation after authenticating the checkpoint and ledger and restoring accepted geometry and witnesses through the existing path."
+    },
+    "evaluate": {
+      "signature": "checker.evaluate(sid, factor) -> width_check",
+      "sid": "Stable source route ID",
+      "requires": ["next eligible rung from the owning ladder", "source-preserving candidate built from the bound original geometry", "all inputs remain owned by the serialized checker"],
+      "returns": ["passed", "failures", "checks"],
+      "effects": "Runs the existing proposal predicates and returns the existing report shape. Accepted proof state stays unchanged until accept. The next evaluation clears the pending proposal."
+    },
+    "accept": {
+      "signature": "checker.accept(sid, factor) -> None",
+      "requires": "The same route and factor passed the most recent evaluation in this checker",
+      "on_mismatch": "T04_CHECKED_ROUTE_PROPOSAL_REQUIRED",
+      "effects": "Publish the checked geometry, factor, rows and accepted proof chain together."
+    },
+    "record": {
+      "artifact_kind": "width-check",
+      "fingerprint": "SHA-256 of canonical report bytes",
+      "owner": "The calling ladder or bounded benchmark retains the report and associates it with its scheduled attempt."
+    }
+  },
+  "preparation": {
+    "eligible_path": "Checker-owned T04 CandidateSnapshot with one proposal and a restored or previously verified primitive dependency proof state",
+    "accepted_geometry": "Checker-owned geometry map with a passing witness per route, keyed by source identity and exact candidate digest",
+    "spatial_view": "Reuse the ordered maximum-envelope STRtree and copy its accepted bounds with one row replaced when the trial fits",
+    "affected_routes": "Query both the accepted and trial spatial views with the existing construction guard, retaining deterministic query order",
+    "dependency_invalidation": {
+      "same_accepted_state": "Compare the prior trial route and the new trial route against the accepted versions",
+      "prior_trial_accepted": "Compare the new trial route against the just-accepted version",
+      "unrelated_or_restored_state": "Clear active dependency links and rebind to the restored state. Exact cached witnesses still require a full matching operand context.",
+      "general_vector_after_single_route": "Restart complete vector version tracking"
+    },
+    "fallbacks": {
+      "missing_accepted_proof_or_inapplicable_profile": "Existing complete-vector checker",
+      "trial_outside_prepared_envelope": "Existing spatial index construction, including exact STRtree fallback",
+      "source_identity_or_port_width_mismatch": "ORIGINAL_TRACE_BINDING_CHANGED",
+      "policy_mismatch": "U03_DEPENDENCY_POLICY_CHANGED"
+    },
+    "storage": "Transient only. Spatial views retain the existing three-view bound. The trial overlay and dependency state use the existing checker lifetime."
+  },
+  "unchanged_contracts": {
+    "ladder_settings": "contracts/t04/settings.json",
+    "continuation_schedule": "contracts/t04/pass_schedule.json",
+    "report_and_checkpoint": "Existing width-check reports, proof-chain encoding and PassState schema",
+    "final_checks": ["complete nominal and envelope verification", "native export and reparse", "corruption checks"]
+  },
+  "unsupported": ["public CLI or MCP endpoint for this option", "changing the search order or skipping scheduled proposals", "parallel mutation of a checker", "standalone persistence of the one-route overlay", "reuse of a rejected verdict as a new check"],
+  "qualification": {
+    "tests": "tests/test_t04_single_route_preparation.py",
+    "reference": "Same schedule, exact archived reports and accepted proof-chain hashes for bounded saved cases",
+    "required_measurements": ["setup time", "first-batch checker time", "warmed checker time", "report parity", "accepted chain parity"]
+  },
+  "docs": "docs/T04_SINGLE_ROUTE_PREPARATION.md"
+}
