@@ -26,6 +26,8 @@ from src.u04_board.search import FastRectangleAdapter
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--saved-job',required=True,type=Path,help='Retained legacy job containing t02.json and audits/t02/proof.json')
 parser.add_argument('--output',required=True,type=Path,help='New evidence directory on the configured workspace')
+parser.add_argument('--baseline',choices=['fresh','shared'],default='fresh',
+                    help='Fresh per-task preparation or cef312f shared preparation without packed unions')
 args=parser.parse_args()
 import os, shutil
 workspace=Path(os.environ['GERBER_U05_WORKSPACE']).resolve(strict=True)
@@ -65,10 +67,18 @@ def task(shared):
         result['groups'].clear() # cannot alter the retained immutable record
     return dict(wall_s=perf_counter()-wall,cpu_s=process_time()-cpu,signature=signature)
 
+optimized_union=predecessor_union
+def previous_shared_union(geometries,build):
+    from src.stage_abi.t02_preparation import ACTIVE
+    owner=ACTIVE.get()
+    if owner is None:return build()
+    return owner.resources.memo.construct('t02-predecessor-union',geometries,(),build)
+
 records={}
 for label in ('cold','shared'):
     rows=[]
-    with T02Preparation(scene,policy) if label=='shared' else nullcontext(None) as shared:
+    predecessor_union=previous_shared_union if label=='cold' and args.baseline=='shared' else optimized_union
+    with T02Preparation(scene,policy) if label=='shared' or args.baseline=='shared' else nullcontext(None) as shared:
         wall,cpu=perf_counter(),process_time()
         # Separate worker threads explicitly receive the same session; the
         # lease serializes LRU access. No repeated full-board solve is run.
@@ -81,7 +91,7 @@ for label in ('cold','shared'):
     (dest/'PROGRESS.json').write_text(json.dumps(records,indent=2)+'\n')
 expected_sig=records['cold']['tasks'][0]['signature']
 assert all(row['signature']==expected_sig for result in records.values() for row in result['tasks'])
-records.update(status='EXACT_PREPARATION_PARITY',source_sha256=scene['source_sha256'],
+records.update(baseline=args.baseline,status='EXACT_PREPARATION_PARITY',source_sha256=scene['source_sha256'],
     predecessor_sha256=stage['plan']['scene_ref']['sha256'],scene_objects=len(scene['objects']),
     rectangle_targets=len(stage['plan']['details']['targets']),sample_neighbor_queries=len(targets),
     saved_neighbor_records_exact=True,full_board_run=False)

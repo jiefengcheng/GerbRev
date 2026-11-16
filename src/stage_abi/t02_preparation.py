@@ -18,6 +18,7 @@ from .loaded_geometry import geometry_checksum, SNAPSHOT_BYTES
 
 from .preparation import Resources, ACTIVE as GEOMETRY_ACTIVE
 from .store import canonical, digest
+from .packed_geometry import PackedGeometry
 from src.native_preparation import ParsePreparation, ACTIVE as NATIVE_ACTIVE
 
 ACTIVE = ContextVar('t02_preparation_session', default=None)
@@ -101,6 +102,8 @@ class T02Preparation:
         self.binding = self.key(scene, policy)
         self.resources = T02Resources(self.binding)
         self.native = ParsePreparation(self.binding)
+        self.memo_budget = self.resources.memo.limit
+        self.packed_predecessor = None
         self.records = OrderedDict()
         self.record_bytes = 0
         self.record_limit = 4 * 1024**2
@@ -167,7 +170,55 @@ class T02Preparation:
             self.stats['neighbor_hits'] += 1
         return json.loads(entry[0])
 
+    def predecessor_union(self, geometries, build):
+        """Reuse an oversized exact union within the existing memo allowance.
+
+        Small unions retain the normal native-geometry memo path. For oversized
+        results, a single compressed EWKB record borrows space from that same
+        budget. The remaining native memo is reduced accordingly, with ordinary
+        LRU eviction. No new 32 MiB cache or growing union history is added.
+        """
+        if ACTIVE.get() is not self:
+            raise ValueError('T02_PREPARATION_LEASE_REQUIRED')
+        memo = self.resources.memo
+        key = digest(canonical([self.binding, 't02-predecessor-union',
+                                [memo.token(g) for g in geometries]]))
+        old = self.packed_predecessor
+        if old is not None and old.key == key:
+            result = old.restore()
+            self.stats['packed_union_hits'] += 1
+            return result
+        if old is not None:
+            # Changed operands replace the single record; they never reuse an
+            # old scene. Releasing it restores the original native memo budget.
+            old.validate()
+            self.packed_predecessor = None
+            memo.limit = self.memo_budget
+            self.stats['packed_union_invalidations'] += 1
+        previous = memo.stats['not_retained']
+        result = memo.construct('t02-predecessor-union', geometries, (), build)
+        if memo.stats['not_retained'] > previous:
+            packed = PackedGeometry.pack(key, result)
+            if packed is not None and packed.weight <= self.memo_budget:
+                available = self.memo_budget - packed.weight
+                while memo.values and memo.weight > available:
+                    _, entry = memo.values.popitem(last=False)
+                    memo.weight -= entry.weight
+                    memo.stats['evictions'] += 1
+                memo.limit = available
+                self.packed_predecessor = packed
+                self.stats['packed_union_builds'] += 1
+            else:
+                self.stats['packed_union_not_retained'] += 1
+        return result
+
     def validate(self):
+        if self.packed_predecessor is not None:
+            self.packed_predecessor.validate()
+        retained = 0 if self.packed_predecessor is None else self.packed_predecessor.weight
+        if (self.resources.memo.limit + retained != self.memo_budget
+                or self.resources.memo.weight + retained > self.memo_budget):
+            raise ValueError('T02_PREPARATION_MEMO_BUDGET_CHANGED')
         self.resources.validate()
         self.native.validate()
         for raw, sha in self.records.values():
@@ -177,10 +228,14 @@ class T02Preparation:
     def diagnostics(self):
         return dict(self.stats, binding=self.binding, records=len(self.records),
                     record_bytes=self.record_bytes, record_limit=self.record_limit,
+                    packed_predecessor_bytes=0 if self.packed_predecessor is None else self.packed_predecessor.weight,
+                    combined_memo_budget=self.memo_budget,
                     resources=self.resources.diagnostics(), native=self.native.diagnostics())
 
     def close(self):
         with self.lock:
+            self.packed_predecessor = None
+            self.resources.memo.limit = self.memo_budget
             self.resources.close()
             self.native.close()
             self.records.clear()
@@ -214,4 +269,4 @@ def predecessor_union(geometries, build):
         return build()
     # Preserve operand order and exact GEOS construction. No pruning,
     # regrouping or approximate union replaces the original expression.
-    return owner.resources.memo.construct('t02-predecessor-union', geometries, (), build)
+    return owner.predecessor_union(geometries, build)
