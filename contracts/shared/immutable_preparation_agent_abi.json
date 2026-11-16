@@ -1,0 +1,230 @@
+{
+  "schema": "immutable-preparation-agent-abi/1",
+  "status": "design-for-future-adapters",
+  "transport": "No generic executable dispatcher is implemented by this contract",
+  "existing_implementations": {
+    "t02": "contracts/t02/preparation_agent_abi.json",
+    "t04": "contracts/t04/saved_replay_abi.json",
+    "stage_loop_design": "contracts/gerber_u05/incremental_stage_agent_abi.json"
+  },
+  "governing_rules": [
+    "Source catalogue identity, ownership and grouping are ground truth",
+    "Accepted predecessor determines actual copper, walls, gaps and clearance",
+    "A later stage cannot undo accepted earlier work except through an explicitly authorized owning-stage correction",
+    "Prepare immutable operands once; keep mutable candidate/decision state separate",
+    "No tolerance, source coverage, pin separation, clearance or final export check may be weakened for caching"
+  ],
+  "records": {
+    "binding": {
+      "required": [
+        "stage",
+        "catalogue_ref",
+        "accepted_predecessor_ref",
+        "policy_ref",
+        "implementation_ref",
+        "runtime_ref"
+      ],
+      "rule": "All refs bind exact bytes; record runtime/implementation compatibility for persistent reuse"
+    },
+    "geometry_record": {
+      "required": [
+        "geometry_ref",
+        "ordered_source_ids",
+        "exact_geometry_digest",
+        "precision_model"
+      ],
+      "optional": [
+        "packed_geometry_ref"
+      ],
+      "rule": "Lossless storage only; unsupported precision falls back to exact construction"
+    },
+    "neighbor_record": {
+      "required": [
+        "binding_digest",
+        "ordered_index_operand_digests",
+        "query_geometry_or_envelope",
+        "query_options",
+        "ordered_candidate_ids",
+        "record_digest"
+      ],
+      "rule": "Candidate lists are broad phase only. Exact predicates still run. Changes in membership or query bounds invalidate them."
+    },
+    "dependency_record": {
+      "required": [
+        "consumer_id",
+        "operand_ids_and_versions",
+        "policy_digest",
+        "dependency_class"
+      ],
+      "dependency_class": [
+        "local",
+        "global",
+        "not_proven_local"
+      ],
+      "rule": "Only proven-local work may use affected-neighbor-only validation. Global or unproven dependencies retain complete checks."
+    },
+    "checkpoint_record": {
+      "required": [
+        "binding_digest",
+        "accepted_state_ref",
+        "next_cursor",
+        "ledger_prefix_digest",
+        "geometry_refs",
+        "dependency_refs",
+        "check_report_refs",
+        "record_digests"
+      ],
+      "rule": "Atomic publication after referenced artifacts are complete; no accepted proposal may be lost or replayed as new work"
+    }
+  },
+  "proposed_operations": {
+    "bind": {
+      "inputs": [
+        "binding"
+      ],
+      "outputs": [
+        "binding_digest"
+      ],
+      "on_mismatch": "Reject; do not infer compatibility"
+    },
+    "prepare": {
+      "inputs": [
+        "binding_digest",
+        "accepted_state_ref"
+      ],
+      "outputs": [
+        "immutable_geometry_refs",
+        "neighbor_record_refs",
+        "preparation_metrics"
+      ]
+    },
+    "propose": {
+      "inputs": [
+        "binding_digest",
+        "accepted_state_ref",
+        "cursor",
+        "candidate_ref"
+      ],
+      "outputs": [
+        "proposal_ref",
+        "affected_dependency_refs"
+      ],
+      "rule": "Query both removed and added extents and every policy-required influence region; discover newly affected neighbors"
+    },
+    "check": {
+      "inputs": [
+        "proposal_ref",
+        "affected_dependency_refs",
+        "accepted_state_ref"
+      ],
+      "outputs": [
+        "bound_check_report_ref",
+        "PASS_or_FAIL"
+      ],
+      "rule": "A cached operand is not a verdict. Reusing a check witness requires an adapter-qualified complete matching dependency binding; otherwise run the exact checker."
+    },
+    "accept": {
+      "inputs": [
+        "proposal_ref",
+        "bound_check_report_ref"
+      ],
+      "outputs": [
+        "new_accepted_state_ref",
+        "next_cursor"
+      ],
+      "requires": [
+        "All applicable checks pass against the current accepted state"
+      ],
+      "effects": [
+        "Record immutable accepted geometry",
+        "Invalidate affected dependencies",
+        "Preserve source catalogue grouping"
+      ]
+    },
+    "reject": {
+      "inputs": [
+        "proposal_ref",
+        "bound_check_report_ref"
+      ],
+      "outputs": [
+        "unchanged_accepted_state_ref",
+        "next_cursor"
+      ],
+      "effects": [
+        "Retain failed proposal and check evidence; no alternate representation may bypass rejection"
+      ]
+    },
+    "checkpoint": {
+      "inputs": [
+        "checkpoint_record"
+      ],
+      "outputs": [
+        "checkpoint_ref"
+      ],
+      "rule": "Requires an explicitly implemented adapter; T02 persistent resume is NOT_IMPLEMENTED"
+    },
+    "resume": {
+      "inputs": [
+        "checkpoint_ref",
+        "binding_digest"
+      ],
+      "outputs": [
+        "accepted_state_ref",
+        "next_cursor",
+        "validated_preparation_refs"
+      ],
+      "rule": "Reject mismatch/corruption; never claim a recorded decision was freshly re-evaluated"
+    },
+    "finalize": {
+      "inputs": [
+        "accepted_state_ref",
+        "ledger_refs"
+      ],
+      "outputs": [
+        "complete_final_check_refs",
+        "actual_export_reparse_refs",
+        "timing_and_parity_receipt"
+      ],
+      "rule": "Retain complete final validation and all corruption/export checks; no full run is authorized by this design"
+    }
+  },
+  "agent_loop": [
+    "Inspect existing bound receipts and task status",
+    "Select one bounded saved-data experiment",
+    "Prepare or restore immutable operands only under the matching binding",
+    "Execute permitted proposal checks against current accepted state",
+    "Persist decisions and dependencies only through the implemented owning adapter",
+    "Measure setup, cache restore, local checking and final validation separately",
+    "Report exact parity, differences, failures and supported limits; wait for authorization before scope expansion"
+  ],
+  "measurement_fields": [
+    "setup_cpu_s",
+    "setup_wall_s",
+    "task_cpu_s",
+    "task_wall_s",
+    "geometry_decodes",
+    "geometry_hits",
+    "index_builds",
+    "index_hits",
+    "spatial_queries",
+    "spatial_hits",
+    "neighbor_builds",
+    "neighbor_hits",
+    "packed_builds",
+    "packed_restores",
+    "retained_estimated_bytes",
+    "report_parity",
+    "geometry_parity",
+    "decision_differences",
+    "full_board_run"
+  ],
+  "forbidden": [
+    "Treating this design as a runnable API",
+    "Claiming cache hits satisfy checks",
+    "Using source copper in place of accepted predecessor copper",
+    "Network disk reuse when disallowed",
+    "Discarding failed evidence",
+    "Starting a full-board run or replay without authorization"
+  ],
+  "docs": "docs/T02_REUSE_HANDOFF.md"
+}

@@ -14,6 +14,14 @@ from .loaded_geometry import geometry_checksum
 
 @dataclass(frozen=True)
 class PackedGeometry:
+    """Immutable, in-memory snapshot of an exact construction result.
+
+    key: caller-owned dependency/expression binding, not a filename or object ID.
+    body: compressed EWKB; raw_size bounds restoration output.
+    raw_sha: exact decoded EWKB identity; geometry_sha also includes precision.
+    seal: integrity hash of all metadata and the compressed-byte hash. This is
+    corruption detection, not authentication against an actor rewriting hashes.
+    """
     key: str
     body: bytes
     raw_size: int
@@ -28,15 +36,22 @@ class PackedGeometry:
         return len(self.body) + 1024
 
     def header(self):
+        """Canonical metadata hashed without a recursive reference to seal."""
         return canonical([self.key, digest(self.body), self.raw_size,
                           self.raw_sha, self.geometry_sha])
 
     def validate(self):
+        """Check retained bytes before reuse; no GEOS reconstruction needed."""
         if self.raw_size < 0 or digest(self.header()) != self.seal:
             raise ValueError('PACKED_GEOMETRY_CORRUPTED')
 
     @classmethod
     def pack(cls, key, shape):
+        """Encode losslessly, or return None for unsupported precision semantics.
+
+        Retention/budget decisions belong to the owning context. Level 1 trades
+        a small first-build cost for lower retained bytes; it never alters WKB.
+        """
         if get_precision(shape) != 0:
             return None
         raw = to_wkb(shape, include_srid=True)
@@ -46,6 +61,12 @@ class PackedGeometry:
                    row.geometry_sha, digest(row.header()))
 
     def restore(self):
+        """Return a fresh native shape with the exact stored geometry checksum.
+
+        Decoded native objects remain caller-owned. This record does not retain
+        another strong geometry reference outside the owner's declared budget.
+        Every malformed representation raises; callers must preserve the failure.
+        """
         self.validate()
         decoder = zlib.decompressobj()
         try:

@@ -4,6 +4,8 @@ Standalone CLI for the source-only Gerber U05 route. It processes one explicitly
 
 See the [performance handoff](docs/PERFORMANCE_HANDOFF.md) for this branch's changes and qualification steps.
 
+The [consolidated T02 reuse handoff](docs/T02_REUSE_HANDOFF.md) documents shared preparation and exact packed predecessor reuse, measured CPU/wall savings, parity, and extension boundaries for other stages. These changes remain isolated; no client-board rerun is implied.
+
 ## Workflow reference
 
 ![Chinese workflow reference covering T01 through T07](docs/images/workflow-reference.jpg)

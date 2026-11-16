@@ -21,6 +21,8 @@ from .store import canonical, digest
 from .packed_geometry import PackedGeometry
 from src.native_preparation import ParsePreparation, ACTIVE as NATIVE_ACTIVE
 
+# This selects the explicitly leased session; it is not a process-global cache.
+# ContextVar tokens are restored on both success and failure.
 ACTIVE = ContextVar('t02_preparation_session', default=None)
 
 
@@ -38,6 +40,13 @@ class T02Resources(Resources):
         super().__init__(binding, geometry_bytes=SNAPSHOT_BYTES-self.alias_limit)
 
     def decode(self, body):
+        """Resolve checked artifact bytes to an immutable shape.
+
+        The store still owns artifact read/hash validation. This second hash
+        addresses the local cache. A spatial tree may outlive the decoded LRU;
+        weak aliases let its still-live shape be reused without retaining an
+        extra copy or mistaking a reused Python object ID for the old geometry.
+        """
         key = digest(body)
         old = self.aliases.get(key)
         shape = None if old is None else old[0]()
@@ -52,6 +61,8 @@ class T02Resources(Resources):
         shape = super().decode(body)
         while self.aliases and len(self.aliases)*256 >= self.alias_limit:
             self.aliases.popitem(last=False)
+        # Delete only our own weakref: an older callback must not remove a
+        # newer shape installed under the same byte hash.
         def expired(ref, k=key):
             row = self.aliases.get(k)
             if row is not None and row[0] is ref:
@@ -60,6 +71,14 @@ class T02Resources(Resources):
         return shape
 
     def index(self, geometries, kwargs):
+        """Return a bounded ordered index, retaining exact query semantics.
+
+        Content keys survive decode eviction; order is significant because
+        STRtree answers are positional. Query records are keyed independently
+        by the tree content token and envelope, so replacing an operand also
+        makes its old candidate lists unreachable. A too-large index uses the
+        original native tree without retaining it in this context.
+        """
         # Source order stays part of the key. Equal sets in a different order
         # cannot reuse positional neighbor results.
         versions = tuple(geometry_checksum(g) for g in geometries)
@@ -85,6 +104,7 @@ class T02Resources(Resources):
         return tree
 
     def diagnostics(self):
+        """Expose reuse counts and retained-cache estimates, not acceptance."""
         return dict(super().diagnostics(), weak_alias_entries=len(self.aliases),
                     weak_alias_estimated_bytes=len(self.aliases)*256,
                     weak_alias_reserved_bytes=self.alias_limit,
@@ -96,14 +116,26 @@ class T02Resources(Resources):
 
 
 class T02Preparation:
+    """One accepted predecessor/policy owns many serialized task leases.
+
+    Lifecycle: construct -> lease/validate/work/validate -> release -> repeat
+    -> close. A task exception poisons the whole session. Mutable proposals,
+    verdicts and history do not live here. Separate OS processes must construct
+    their own context; this object is neither a checkpoint nor a shared-memory
+    service. All callbacks are internal trusted construction functions.
+    """
     def __init__(self, scene, policy):
         if policy.get('stage') != 't02':
             raise ValueError('T02_PREPARATION_STAGE_REQUIRED')
         self.binding = self.key(scene, policy)
         self.resources = T02Resources(self.binding)
         self.native = ParsePreparation(self.binding)
+        # Reserve a fixed combined allowance. Packed bytes borrow from this
+        # native memo; the two representations cannot each claim the full cap.
         self.memo_budget = self.resources.memo.limit
         self.packed_predecessor = None
+        # LRU entries are (canonical JSON bytes, SHA-256), not mutable dicts.
+        # Callers receive fresh JSON so task-local plan edits remain local.
         self.records = OrderedDict()
         self.record_bytes = 0
         self.record_limit = 4 * 1024**2
@@ -119,6 +151,12 @@ class T02Preparation:
 
     @contextmanager
     def task(self, scene, policy):
+        """Lease the cache to one task; never silently rebind stale inputs.
+
+        RLock covers the full lease, not just lookups. Other task threads wait;
+        nested leases in the same context are rejected. Matching hashes select
+        immutable preparation only and do not constitute a geometric verdict.
+        """
         with self.lock:
             if self.closed or os.getpid() != self.pid:
                 raise ValueError('T02_PREPARATION_CLOSED_OR_FOREIGN_PROCESS')
@@ -147,7 +185,13 @@ class T02Preparation:
                 ACTIVE.reset(tokens[0])
 
     def record(self, key, build):
-        """Return a fresh JSON value; a caller cannot mutate the stored proof."""
+        """Return immutable-preparation data as a fresh caller-owned JSON value.
+
+        The supplied key must bind every dependency; neighbor_records constructs
+        it below. Cache pressure changes retention only: build still executes
+        for misses/oversize records, and all consuming checks still execute.
+        Corruption is an error, not an opportunity to overwrite failed evidence.
+        """
         if ACTIVE.get() is not self:
             raise ValueError('T02_PREPARATION_LEASE_REQUIRED')
         entry = self.records.get(key)
@@ -213,6 +257,12 @@ class T02Preparation:
         return result
 
     def validate(self):
+        """Check record integrity and the combined budget at lease boundaries.
+
+        Packed validation checks the immutable compressed record; a restore
+        additionally checks decoded bytes and geometry. Base Resources checks
+        decoded operands, geometry memo values, used trees and query records.
+        """
         if self.packed_predecessor is not None:
             self.packed_predecessor.validate()
         retained = 0 if self.packed_predecessor is None else self.packed_predecessor.weight
@@ -226,6 +276,7 @@ class T02Preparation:
                 raise ValueError('T02_PREPARATION_NEIGHBOR_CORRUPTED')
 
     def diagnostics(self):
+        """Report counters and both shares of the memo budget for profiling."""
         return dict(self.stats, binding=self.binding, records=len(self.records),
                     record_bytes=self.record_bytes, record_limit=self.record_limit,
                     packed_predecessor_bytes=0 if self.packed_predecessor is None else self.packed_predecessor.weight,
@@ -233,6 +284,11 @@ class T02Preparation:
                     resources=self.resources.diagnostics(), native=self.native.diagnostics())
 
     def close(self):
+        """Release cache ownership without changing artifacts or caller shapes.
+
+        Idempotent cleanup also runs on failed tasks. A closed session cannot
+        be leased again; create a new bound context after diagnosing the error.
+        """
         with self.lock:
             self.packed_predecessor = None
             self.resources.memo.limit = self.memo_budget
@@ -250,6 +306,12 @@ class T02Preparation:
 
 
 def neighbor_records(scene, original, current, source, policy, build):
+    """Adapt existing neighbor discovery without moving its rule ownership.
+
+    Full operand versions are included because source catalogue membership and
+    accepted current copper have different roles. Their source IDs alone are
+    insufficient. Without a leased context this calls the original builder.
+    """
     owner = ACTIVE.get()
     if owner is None:
         return build()
@@ -264,6 +326,7 @@ def neighbor_records(scene, original, current, source, policy, build):
 
 
 def predecessor_union(geometries, build):
+    """Optional preparation hook; exact original computation outside a lease."""
     owner = ACTIVE.get()
     if owner is None:
         return build()

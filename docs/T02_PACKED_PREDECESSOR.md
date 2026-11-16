@@ -4,6 +4,8 @@ Isolated branch `codex/t02-packed-predecessor`, based on the reviewed shared
 preparation commit `cef312f`. No client-board run, full proposal replay,
 normal-app integration or remote push is part of this qualification.
 
+See the [consolidated handoff](T02_REUSE_HANDOFF.md) for the combined branch and reusable infrastructure. The remote-push exclusion above describes the original qualification; publication is now separately authorized.
+
 ## Cost identified
 
 The saved 3020301113B preparation profile found that the complete ordered

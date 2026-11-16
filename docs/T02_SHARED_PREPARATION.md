@@ -1,6 +1,8 @@
 # Shared T02 preparation — isolated qualification, 2026-11-16
 
 Branch: `codex/t02-shared-preparation`, based on `0fcf38791612c9ee3ad86504d94608f0195c4b5c`.
+This document records qualification of `cef312f`; the [consolidated handoff](T02_REUSE_HANDOFF.md) includes the subsequent packed-union optimization.
+
 This changes preparation reuse, not rectangle eligibility, growth, clearance,
 pin separation, remedy, export or acceptance rules. No client full-board run or
 7,069-proposal replay was started. The normal application is not integrated.

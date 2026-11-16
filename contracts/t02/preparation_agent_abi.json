@@ -1,0 +1,146 @@
+{
+  "schema": "t02-preparation-agent-abi/1",
+  "status": "implemented-python-interface",
+  "transport": "in-process Python; no RPC, MCP or CLI session service",
+  "implementation_files": [
+    "src/stage_abi/t02_preparation.py",
+    "src/stage_abi/packed_geometry.py",
+    "src/gerber_u05/pipeline.py"
+  ],
+  "stage": "t02",
+  "scope": "Immutable preparation only. No treatment or acceptance authorization.",
+  "binding": {
+    "inputs": [
+      "entire accepted predecessor scene",
+      "captured T02 policy"
+    ],
+    "digest": "sha256(canonical(['t02-preparation/1', scene, policy]))",
+    "caller_requires": [
+      "Verify accepted predecessor artifact and its qualification before opening",
+      "Retain source catalogue identities and grouping",
+      "Read and validate actual artifact bytes through the existing store"
+    ]
+  },
+  "operations": {
+    "open": {
+      "python": "T02Preparation(scene, policy)",
+      "outputs": [
+        "opaque process-local context",
+        "context.binding"
+      ],
+      "requires": [
+        "policy.stage == 't02'"
+      ],
+      "effects": "Allocates bounded cache owners; no geometry computation or verdict"
+    },
+    "lease": {
+      "python": "with context.task(scene, policy): ...",
+      "requires": [
+        "same process",
+        "context open",
+        "matching scene/policy",
+        "no nested active T02 lease"
+      ],
+      "effects": "Serializes the full task and validates caches before and after; restores prior ContextVars on exit"
+    },
+    "run_t02": {
+      "python": "run_t02(store, scene, recorded=None, preparation=context)",
+      "requires": [
+        "Do not wrap this call in context.task; run_t02 leases internally",
+        "Existing stage authorization and accepted input binding"
+      ],
+      "outputs": [
+        "existing T02 result, candidate, plan, verification and summary"
+      ],
+      "effects": "Runs the existing stage and checks; does not bypass reconstruction or final verification"
+    },
+    "neighbor_records": {
+      "python": "neighbor_records(scene, original, current, source, policy, build)",
+      "requires": [
+        "Internal trusted builder",
+        "Complete live operand mapping"
+      ],
+      "outputs": [
+        "fresh JSON copy of complete neighbor preparation"
+      ],
+      "fallback": "Original builder outside a lease or on cache miss; corruption raises"
+    },
+    "predecessor_union": {
+      "python": "predecessor_union(geometries, build)",
+      "requires": [
+        "Internal exact builder",
+        "Original ordered operands"
+      ],
+      "outputs": [
+        "exact geometry"
+      ],
+      "fallback": "Exact original construction outside lease, on changed dependencies, oversize or unsupported precision"
+    },
+    "diagnostics": {
+      "python": "context.diagnostics()",
+      "outputs": [
+        "binding",
+        "tasks",
+        "neighbor_builds",
+        "neighbor_hits",
+        "packed_union_builds",
+        "packed_union_hits",
+        "packed_union_invalidations",
+        "resources",
+        "native",
+        "record_bytes",
+        "packed_predecessor_bytes",
+        "combined_memo_budget"
+      ],
+      "counter_note": "Unused Counter keys may be absent; consumers may display them as zero. This is not a verdict."
+    },
+    "close": {
+      "python": "context.close()",
+      "effects": "Idempotent cache release; closed contexts reject further leases; evidence and caller-owned geometry stay intact"
+    }
+  },
+  "budgets": {
+    "geometry_allowance_bytes": 201326592,
+    "weak_alias_reserved_within_geometry_bytes": 8388608,
+    "index_bytes": 33554432,
+    "query_bytes": 4194304,
+    "neighbor_record_bytes": 4194304,
+    "neighbor_record_entries": 256,
+    "native_parse_bytes": 33554432,
+    "combined_native_and_packed_memo_bytes": 33554432,
+    "semantics": "Retained-cache estimates, not total RSS; transient GEOS allocations are separate"
+  },
+  "errors": [
+    "T02_PREPARATION_STAGE_REQUIRED",
+    "T02_PREPARATION_CLOSED_OR_FOREIGN_PROCESS",
+    "T02_PREPARATION_PREDECESSOR_OR_POLICY_CHANGED",
+    "T02_PREPARATION_NESTED_TASK",
+    "T02_PREPARATION_INPUT_MUTATED",
+    "T02_PREPARATION_LEASE_REQUIRED",
+    "T02_PREPARATION_NEIGHBOR_CORRUPTED",
+    "T02_PREPARATION_MEMO_BUDGET_CHANGED",
+    "PACKED_GEOMETRY_CORRUPTED",
+    "PACKED_GEOMETRY_RESTORE_CHANGED"
+  ],
+  "error_policy": "Precondition failures reject entry. Errors during a leased task close the context and propagate; retain failed evidence. Never silently regenerate corrupt cache contents and report a pass.",
+  "not_implemented": [
+    "Cross-process context sharing",
+    "Persistent T02 preparation checkpoint/resume",
+    "Concurrent independent jobs with shared process-global ownership or pin state",
+    "A generic stage preparation implementation for T01/T03/T04/T05"
+  ],
+  "qualification": {
+    "focused_test_files": [
+      "tests/test_t02_preparation.py",
+      "tests/test_packed_predecessor.py"
+    ],
+    "focused_tests": 13,
+    "saved_profiler": "tests/profile_t02_preparation.py",
+    "synthetic_cases": [
+      "rectangle_terminal",
+      "ordered_polarity"
+    ],
+    "checks_each": 47
+  },
+  "docs": "docs/T02_REUSE_HANDOFF.md"
+}
