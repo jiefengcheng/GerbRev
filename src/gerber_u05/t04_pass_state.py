@@ -37,6 +37,8 @@ class PassState:
             if current is None or any(current[sid] is not geometry for sid, geometry in checker.current.items()):
                 raise ValueError('T04_PASS_STATE_UNACCEPTED_CLEARANCE')
             physical = dict(binding=fallback.binding, proof_hash=proof_hash, witnesses=proofs)
+            physical['visibility_ref'] = self.store.put_json(
+                't04-visibility-records', fallback.visibility_records.snapshot())
         # Reuse geometry references for unchanged routes. Every marker still
         # names the complete geometry map and passing witness state it restores.
         refs = {}
@@ -122,6 +124,9 @@ class PassState:
             if physical['binding'] != checker.fallback.binding:
                 raise ValueError('T04_PASS_STATE_CLEARANCE_BINDING_CHANGED')
             checker.fallback.load_accepted_proofs(checker.rows, physical['witnesses'], physical['proof_hash'])
+            if 'visibility_ref' in physical:
+                packet = self.store.get_json(physical['visibility_ref'], kind='t04-visibility-records')
+                checker.fallback.visibility_records.restore(packet)
 
 
 def restore_geometry(store, geometry_refs, checker, settings, widths, rungs):

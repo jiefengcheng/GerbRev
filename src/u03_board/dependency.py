@@ -124,6 +124,8 @@ class DependencyWidthScene(IncrementalWidthScene):
         self.graph=ProofGraph();self.routes=Certificates(self.binding,proof_budget//2);self.pairs=Certificates(self.binding,proof_budget//2)
         self.geometry_budget=geometry_budget;self.geometries=OrderedDict();self.geometry_weight=0
         self.geometry_hits=0;self.empty_witnesses=0;self.visibility_tokens={};self.index_views=OrderedDict()
+        from .visibility_records import VisibilityRecords
+        self.visibility_records=VisibilityRecords(self)
         self.index_builds=1;self.index_fallbacks=0;self.bounds_updates=0
         self.positions={sid:i for i,sid in enumerate(self.ids)}
         self.fixed_ids=[sid for sid in self.ids if sid not in self.trace_ids]
@@ -236,6 +238,9 @@ class DependencyWidthScene(IncrementalWidthScene):
         version=self.cached_sha(current[sid]);entry=self.visible_cache.get(sid)
         if entry is not None and entry[0]==version:return entry[1]
         key=('visible',sid,version);g=self._geometry(key)
+        if g is None:
+            g=self.visibility_records.get(sid,version)
+            if g is not None:self._save_geometry(key,g)
         if g is None:
             g=super().visible_geometry(sid,current);self._save_geometry(key,g)
         else:self.set_visible(sid,(version,g))
