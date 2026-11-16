@@ -273,7 +273,17 @@ def empty_t02(store,scene):
     plan=dict(stage='t02',scene_ref=scene_ref,policy_ref=store.put_json('policy',policy),implementation='complete-empty-native-rectangle-inventory/1',details=dict(targets=[],parameters={},family=policy['parameters']['family'],bounds=bounds(scene),containment={},inventory=inventory))
     return dict(output_scene_ref=scene_ref,candidate=candidate,plan=plan,verification=proof,summary=dict(rectangles=0,grown=0,contained_keep=0,inclusive=0))
 
-def run_t02(store,scene,*,recorded=None):
+def run_t02(store,scene,*,recorded=None,preparation=None):
+    from src.stage_abi.t02_preparation import T02Preparation
+    policy=dict(stage='t02',parameters=land_parameters('t02'))
+    if preparation is None:
+        with T02Preparation(scene,policy) as shared:
+            with shared.task(scene,policy):
+                return _run_t02(store,scene,recorded=recorded)
+    with preparation.task(scene,policy):
+        return _run_t02(store,scene,recorded=recorded)
+
+def _run_t02(store,scene,*,recorded=None):
     ids=[r['source_id']for r in scene['objects']if t02_land(r)]
     if not ids:return empty_t02(store,scene)
     from src import component_clearance as ownership

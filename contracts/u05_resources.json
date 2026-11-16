@@ -2,6 +2,7 @@
   "contracts/clearance/production.json": "cab61452f4f1f99c99d2e1959b9de50c84569944728a4685d101810b78d67ac1",
   "contracts/clearance/settings.json": "31e1f2d21d911ca7a7f80f28432a39c5112663e718e253d1cf3bc11eea612b7e",
   "contracts/component_remedy/settings.json": "d296f436a16f93469e4ac5ed0a179eb1fed0fa85f03ffa7ab16c7b3060bab140",
+  "contracts/gerber_u05/incremental_stage_agent_abi.json": "1c1213d9f30ef544b7f68ecddb1b5ce8bf7db69c0295b460adb9025280dbb6a1",
   "contracts/gerber_u05/runtime.json": "9a4a8ee9ba429e73cbbf4802b66c5cb4c8f09476d7cb2cec24bf3b813f3c5edd",
   "contracts/growth_void/settings.json": "6fdf639aecacad85ff1f3801d7bae6f7743be965ec0a206ac6750faf205118e8",
   "contracts/hole_acceptance/settings.json": "bcff0e3e0db43ecfde439e9bdc03ec40ff482afe20ab66471da6038eee35aedd",
@@ -14,6 +15,7 @@
   "contracts/t02_rectangle_exposure/settings.json": "67a0957f163cb144f2f2e4c301f9237c10634945513fac490fe42849a95edc46",
   "contracts/t02_shared_gaps/settings.json": "46f9513344180f1b21116387b136c340cd13f852ed31ac8ba9b78f633b238304",
   "contracts/t04/pass_schedule.json": "212fefa78699d261eb315e094c7c6cbcdfb2e4c94c880bb2d3083fc57f43cbc6",
+  "contracts/t04/saved_replay_abi.json": "78ec870acc9ab18d87558fdb519a790500e002517a9dd1c54850b3486e634cfb",
   "contracts/t04/settings.json": "ea938b634215191577b2a18da90ceca63be31ba50cfd49d75425e38da807b384",
   "contracts/t05_joint/settings.json": "ea8ffb64c39ad7170e37ba14f3c058f01d2e7300b02799f7f469732bd7b85efd"
 }

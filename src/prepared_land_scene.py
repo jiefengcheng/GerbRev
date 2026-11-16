@@ -10,6 +10,7 @@ from shapely.ops import unary_union
 from .prepared_width_scene import PreparedWidthScene
 from .trace_width_clearance import TraceWidthContract,sha
 from src.stage_abi.preparation import prepared_tree as STRtree
+from src.stage_abi.t02_preparation import predecessor_union
 
 
 class PreparedLandScene(PreparedWidthScene):
@@ -29,7 +30,7 @@ class PreparedLandScene(PreparedWidthScene):
             self.original[sid]=row['geometry'];self.widths[sid]=row.get('trace_width_mm',0.)
             if not math.isfinite(self.widths[sid]) or self.widths[sid]<0:raise ValueError('INVALID_FIXED_SOURCE_WIDTH')
         for g in self.original.values():self.valid_geometry(g)
-        self.ids=sorted(self.original);self.tree=STRtree([self.original[s] for s in self.ids]);self.predecessor=unary_union([self.original[s] for s in self.ids]);self.predecessor_sha=sha(self.predecessor)
+        self.ids=sorted(self.original);self.tree=STRtree([self.original[s] for s in self.ids]);self.predecessor=predecessor_union([self.original[s] for s in self.ids],lambda:unary_union([self.original[s] for s in self.ids]));self.predecessor_sha=sha(self.predecessor)
         self.fixed_visibility={};self.trace_visibility={};self.ports={};self.addition_visibility={}
 
     def check(self,lands,*,materialize_scene=False,fail_fast=False):

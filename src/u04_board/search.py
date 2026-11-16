@@ -29,7 +29,10 @@ class FastRectangleAdapter(LandAdapter):
   key=(store,digest(canonical(scene)),shared_gaps.policy(),source)
   prepared=getattr(self,'_prepared_shared_gaps',None)
   if prepared is None or key!=prepared[0]:
-   prepared=(key,super()._shared_gap_records(store,scene,original,current))
+   from src.stage_abi.t02_preparation import neighbor_records
+   parent=super()._shared_gap_records
+   prepared=(key,neighbor_records(scene,original,current,source,shared_gaps.policy(),
+       lambda:parent(store,scene,original,current)))
    self._prepared_shared_gaps=prepared
   # Keep caller-edited plans separate from the record used to check them.
   return deepcopy(prepared[1])
